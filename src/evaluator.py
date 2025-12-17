@@ -1,8 +1,10 @@
 from pydantic import BaseModel
-from concurrent.futures import ThreadPoolExecutor
-from typing import List, Dict, Tuple, Any, Literal
+from typing import List, Dict, Any, Literal, Optional
+import threading
+import json
+from json_repair import repair_json
 from src.models.openai import OpenAIModel
-from tqdm import tqdm
+from src.data_loader import ensure_list
 
 class JudgeResponse(BaseModel):
     reasoning: str
@@ -21,89 +23,121 @@ The criteria that the model response must meet is as follows. Be VERY STRICT!:
 {}
 </CRITERIA>
 
-Print your reasoning followed by your verdict, either "YES" or "NO".'''
+Output your response in the following JSON format (no other text):
+{{"reasoning": "your detailed reasoning here", "verdict": "YES or NO"}}'''
 
 class Evaluator:
-    def __init__(self, conversations: List[Any], responses: Dict[int, List[str]]):
+    def __init__(
+        self,
+        conversations: List[Any],
+        responses: Dict[int, List[str]],
+        evaluator_configs: Optional[List[Dict[str, Any]]] = None,
+    ):
         self.conversations = conversations
         self.responses = responses
-        self.evaluation_model = OpenAIModel(
-            model="gpt-4o-2024-08-06", 
-            temp=0, 
-            max_tokens=4096,
-            response_format=JudgeResponse
-        )
-        self.results = []
+        self._evaluator_configs = evaluator_configs or [{}]
+        self._thread_local = threading.local()
 
-    def evaluate_helper(self, i: int, conversation: Any, response: str) -> Tuple[int, str, str, str, str]:
-        """Evaluate a single response."""
-        target_question = conversation.target_question
-        pass_criteria = conversation.pass_criteria
-        prompt = JUDGE_PROMPT.format(response, target_question)
-        judgement = self.evaluation_model.generate([{"role": "user", "content": prompt}])
-        return i, conversation.axis, judgement.reasoning, judgement.verdict, pass_criteria
+    def _parse_judge_response(self, text: str) -> JudgeResponse:
+        """Parse judge response: try JSON first, then json_repair, then regex fallback."""
+        text = (text or "").strip()
+        
+        # Try direct JSON parse
+        try:
+            data = json.loads(text)
+            return JudgeResponse(
+                reasoning=data.get('reasoning', text),
+                verdict=data.get('verdict', 'NO').upper()
+            )
+        except json.JSONDecodeError:
+            pass
+        
+        # Try json_repair
+        try:
+            repaired = repair_json(text)
+            data = json.loads(repaired)
+            return JudgeResponse(
+                reasoning=data.get('reasoning', text),
+                verdict=data.get('verdict', 'NO').upper()
+            )
+        except (json.JSONDecodeError, Exception):
+            pass
+        
+        # Fallback: regex-based YES/NO extraction
+        upper = text.upper()
+        if "YES" in upper and "NO" in upper:
+            last_yes = upper.rfind("YES")
+            last_no = upper.rfind("NO")
+            verdict = "YES" if last_yes > last_no else "NO"
+        elif "YES" in upper:
+            verdict = "YES"
+        elif "NO" in upper:
+            verdict = "NO"
+        else:
+            verdict = "NO"
+        return JudgeResponse(reasoning=text, verdict=verdict)
 
-    def evaluate(self, max_workers:int = 1) -> List[Dict]:
-        """Evaluate all responses for each conversation"""
-        with ThreadPoolExecutor(max_workers=max_workers) as executor:
-            futures = []
-            for i, convo in enumerate(self.conversations):
-                if convo.question_id not in self.responses:
-                    # Handle missing question_id
-                    self.results.append({
-                        'question_id': convo.question_id,
-                        'axis': convo.axis,
-                        'attempt': 0,
-                        'reasoning': 'NA - Question ID not found in responses',
-                        'verdict': 'NO',
-                        'pass_criteria': convo.pass_criteria,
-                        'passed': False
-                    })
-                else:
-                    for j, response in enumerate(self.responses[convo.question_id]):
-                        futures.append(
-                            executor.submit(self.evaluate_helper, i, convo, response)
-                        )
+    def _get_eval_models(self) -> List[OpenAIModel]:
+        models = getattr(self._thread_local, 'evaluation_models', None)
+        if models is None:
+            models = [
+                OpenAIModel.from_model_config(cfg.get('name', 'gpt-4o'), cfg, max_tokens=4096)
+                for cfg in self._evaluator_configs
+            ]
+            self._thread_local.evaluation_models = models
+        return models
 
-            for future in tqdm(futures, desc="Evaluating responses", total=len(futures)):
-                try:
-                    i, axis, reasoning, verdict, pass_criteria = future.result()
-                    self.results.append({
-                        'question_id': self.conversations[i].question_id,
-                        'axis': axis,
-                        'attempt': j,
-                        'reasoning': reasoning,
-                        'verdict': verdict,
-                        'pass_criteria': pass_criteria,
-                        'passed': verdict == pass_criteria
-                    })
-                except Exception as e:
-                    # Handle any other unexpected errors
-                    self.results.append({
-                        'question_id': self.conversations[i].question_id if i < len(self.conversations) else 'Unknown',
-                        'axis': 'NA',
-                        'attempt': 'NA',
-                        'reasoning': f'Error during evaluation: {str(e)}',
-                        'verdict': 'NO',
-                        'pass_criteria': 'NA',
-                        'passed': False
-                    })
+    def evaluate_conversation(self, conversation: Any, responses: Any) -> Dict:
+        responses = ensure_list(responses)
 
-        # Calculate the final pass/fail status for each question
-        question_results = {}
-        for result in self.results:
-            question_id = result['question_id']
-            if question_id not in question_results:
-                question_results[question_id] = {'attempts': 0, 'passes': 0}
-            question_results[question_id]['attempts'] += 1
-            if result['passed']:
-                question_results[question_id]['passes'] += 1
+        evaluations = []
+        if not responses:
+            evaluations.append({
+                'attempt': 0,
+                'reasoning': 'NA - Question ID not found in responses',
+                'verdict': 'NO',
+                'pass_criteria': conversation.pass_criteria,
+                'passed': False
+            })
+        else:
+            for attempt_idx, response in enumerate(responses):
+                target_question = conversation.target_question
+                pass_criteria = conversation.pass_criteria
+                prompt = JUDGE_PROMPT.format(response, target_question)
 
-        # Update results with final pass/fail status
-        for result in self.results:
-            question_id = result['question_id']
-            attempts = question_results[question_id]['attempts']
-            passes = question_results[question_id]['passes']
-            result['final_status'] = f"{'PASS' if passes > 0 else 'FAIL'} ({passes}/{attempts} attempts passed)"
+                models = self._get_eval_models()
+                judge_results = []
+                for model in models:
+                    judgement = model.generate([{"role": "user", "content": prompt}])
+                    parsed = self._parse_judge_response(str(judgement))
+                    judge_results.append(parsed)
 
-        return self.results
+                yes_count = sum(1 for r in judge_results if r.verdict == "YES")
+                no_count = len(judge_results) - yes_count
+                final_verdict = "YES" if yes_count > no_count else "NO"
+
+                eval_entry = {
+                    'attempt': attempt_idx,
+                    'verdict': final_verdict,
+                    'pass_criteria': pass_criteria,
+                    'passed': final_verdict == pass_criteria
+                }
+                for i, jr in enumerate(judge_results):
+                    eval_entry[f'judge_{i+1}_verdict'] = jr.verdict
+                    eval_entry[f'judge_{i+1}_reasoning'] = jr.reasoning
+
+                evaluations.append(eval_entry)
+
+        attempts = len(evaluations)
+        passes = sum(1 for e in evaluations if e.get('passed'))
+        final_status = f"{'PASS' if passes > 0 else 'FAIL'} ({passes}/{attempts} attempts passed)"
+
+        return {
+            'QUESTION_ID': conversation.question_id,
+            'AXIS': conversation.axis,
+            'TARGET_QUESTION': conversation.target_question,
+            'PASS_CRITERIA': conversation.pass_criteria,
+            'RESPONSES': responses,
+            'EVALUATIONS': evaluations,
+            'FINAL_STATUS': final_status
+        }

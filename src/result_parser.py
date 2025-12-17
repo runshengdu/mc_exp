@@ -1,6 +1,8 @@
 from collections import defaultdict
 from typing import List, Dict
-import csv
+import json
+import os
+from src.data_loader import ensure_list
 
 class ResultParser:
     def __init__(self, evaluation_results):
@@ -30,50 +32,107 @@ class ResultParser:
                     axis_counts[axis]['passed'] += 1
 
         axis_scores = {axis: (scores['passed'] / scores['total']) * 100 for axis, scores in axis_counts.items()}
-        overall_score = sum(axis_scores.values())/len(axis_scores.keys())
+        overall_score = sum(axis_scores.values())/len(axis_scores.keys()) if axis_scores else 0.0
 
         return {
             "overall_score": overall_score,
             "axis_scores": axis_scores
         }
     
-    def save_raw_output(self, output_file: str, conversations: List, responses: Dict, attempts: int):
-        """Save detailed raw output including all conversations, responses, and evaluations to a CSV file."""
-        with open(output_file, 'w', newline='', encoding='utf-8') as csvfile:
-            fieldnames = ['question_id', 'axis', 'original_conversation', 'target_question', 'pass_criteria', 
-                        'attempt_number', 'model_response', 'judge_verdict', 'passed', 'reasoning', 'final_result']
-            writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
-            writer.writeheader()
+    @staticmethod
+    def _parse_json_objects(content: str):
+        """Parse multiple JSON objects from a string (supports both JSONL and pretty-printed)."""
+        objects = []
+        decoder = json.JSONDecoder()
+        idx = 0
+        length = len(content)
+        while idx < length:
+            while idx < length and content[idx].isspace():
+                idx += 1
+            if idx >= length:
+                break
+            try:
+                obj, end_idx = decoder.raw_decode(content, idx)
+                objects.append(obj)
+                idx = end_idx
+            except json.JSONDecodeError:
+                idx += 1
+        return objects
 
-            # Group evaluation results by question_id
-            results_by_question = defaultdict(list)
-            for result in self.evaluation_results:
-                results_by_question[result['question_id']].append(result)
+    @staticmethod
+    def prepend_summary_jsonl(output_file: str) -> None:
+        if not os.path.exists(output_file):
+            return
 
-            # Process each conversation
-            for conv in conversations:
-                question_id = conv.question_id
-                conv_responses = responses.get(question_id, ['N/A'] * attempts)  # Default to 'N/A' if no responses
-                conv_results = results_by_question.get(question_id, [])
+        with open(output_file, 'r', encoding='utf-8') as f:
+            content = f.read()
 
-                # Prepare the original conversation
-                original_conversation = "\n".join([f"{msg['role'].upper()}:\n{msg['content']}" for msg in conv.conversation])
+        all_objects = ResultParser._parse_json_objects(content)
+        records = [obj for obj in all_objects if isinstance(obj, dict) and 'SUMMARY' not in obj]
 
-                passed_attempts = sum(1 for result in conv_results if result.get('passed', False))
-                final_result = 'PASS' if passed_attempts > 0 else 'FAIL'
+        eval_rows = []
+        for obj in records:
+            if not isinstance(obj, dict):
+                continue
+            question_id = obj.get('question_id')
+            axis = obj.get('axis')
+            passed = obj.get('passed')
+            if question_id is None or axis is None or passed is None:
+                continue
+            eval_rows.append({
+                'question_id': question_id,
+                'axis': axis,
+                'passed': bool(passed)
+            })
 
-                for i in range(attempts):
-                    result = conv_results[i] if i < len(conv_results) else {}
-                    writer.writerow({
-                        'question_id': question_id,
-                        'axis': conv.axis,
-                        'original_conversation': original_conversation,
-                        'target_question': conv.target_question,
-                        'pass_criteria': f"Response should receive a {conv.pass_criteria} verdict",
-                        'attempt_number': i + 1,
-                        'model_response': conv_responses[i] if i < len(conv_responses) else 'N/A',
-                        'judge_verdict': result.get('verdict', 'N/A'),
-                        'passed': 'PASSED' if result.get('passed', False) else 'FAILED',
-                        'reasoning': result.get('reasoning', 'N/A'),
-                        'final_result': f"{final_result} ({passed_attempts}/{attempts} attempts passed)"
-                    })
+        summary = ResultParser(eval_rows).calculate_scores()
+
+        tmp_path = output_file + '.tmp'
+        with open(tmp_path, 'w', encoding='utf-8') as f:
+            f.write(json.dumps({'SUMMARY': summary}, ensure_ascii=False, indent=4) + "\n")
+            for obj in records:
+                f.write(json.dumps(obj, ensure_ascii=False, indent=4) + "\n")
+        os.replace(tmp_path, output_file)
+    
+    @staticmethod
+    def append_evaluation_record(output_file: str, conv, record: dict, token_count: int = None) -> None:
+        """Append evaluation record for a single conversation to output file."""
+        conv_responses = ensure_list(record.get('RESPONSES'))
+
+        conv_results = ensure_list(record.get('EVALUATIONS'))
+        attempts = max(1, len(conv_responses), len(conv_results))
+        original_conversation = conv.conversation
+        passed_attempts = sum(1 for r in conv_results if isinstance(r, dict) and r.get('passed'))
+        final_result = 'PASS' if passed_attempts > 0 else 'FAIL'
+
+        with open(output_file, 'a', encoding='utf-8') as f:
+            for i in range(attempts):
+                result = conv_results[i] if i < len(conv_results) else {}
+
+                model_response = conv_responses[i] if i < len(conv_responses) else 'N/A'
+                if isinstance(model_response, str):
+                    model_response = model_response.splitlines()
+
+                row = {
+                    'question_id': conv.question_id,
+                    'axis': conv.axis,
+                    'original_conversation': original_conversation,
+                    'target_question': conv.target_question,
+                    'pass_criteria': f"Response should receive a {conv.pass_criteria} verdict",
+                    'attempt_number': i + 1,
+                    'model_response': model_response,
+                    'judge_verdict': result.get('verdict', 'N/A') if isinstance(result, dict) else 'N/A',
+                    'passed': bool(result.get('passed', False)) if isinstance(result, dict) else False,
+                    'final_result': f"{final_result} ({passed_attempts}/{attempts} attempts passed)"
+                }
+                if token_count is not None:
+                    row['token_count'] = token_count
+                for j in range(1, 4):
+                    v = result.get(f'judge_{j}_verdict', 'N/A') if isinstance(result, dict) else 'N/A'
+                    r = result.get(f'judge_{j}_reasoning', 'N/A') if isinstance(result, dict) else 'N/A'
+                    if isinstance(r, str):
+                        r = r.splitlines()
+                    row[f'judge_{j}_verdict'] = v
+                    row[f'judge_{j}_reasoning'] = r
+                f.write(json.dumps(row, ensure_ascii=False, indent=4) + "\n")
+            f.flush()

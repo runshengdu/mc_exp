@@ -1,9 +1,7 @@
 from abc import ABC, abstractmethod
 
-class ModelProvider(ABC):
-    """Abstract base class for all model providers."""
 
+class ModelProvider(ABC):
     @abstractmethod
-    def generate(self, prompt: str) -> str:
-        """Generates a response for the given prompt."""
-        pass
+    def generate(self, prompt):
+        raise NotImplementedError()
