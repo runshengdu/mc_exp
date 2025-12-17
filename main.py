@@ -62,7 +62,7 @@ def main():
                         help="Model id to use for evaluation (must exist in models.yaml).")
     parser.add_argument('--num-tasks', type=int,
                         help="If provided, only run the first k tasks from the benchmark dataset.")
-    parser.add_argument('--max-workers', type=int, default=5,
+    parser.add_argument('--max-workers', type=int, default=10,
                         help="Number of parallel workers to use for all LLM calls (response generation and evaluation).")
     parser.add_argument('--evaluate-file', type=str,
                         help="Responses file for evaluation.")

@@ -1,77 +1,180 @@
 # MultiChallenge: A Realistic Multi-Turn Conversation Evaluation Benchmark Challenging to Frontier LLMs
+
 MultiChallenge is a novel benchmark designed to evaluate large language models (LLMs) on their ability to handle multi-turn conversations with human users—an essential but underexplored capability for their real-world applications. MultiChallenge focuses on four key categories of challenges that are common, realistic, and highly demanding in current human-LLM interactions. These challenges require LLMs to excel simultaneously in accurate context allocation, in-context reasoning, and instruction-following.
+
 ## **Project Structure**
-- `data/` : Contains input files for conversations (benchmark_questions.jsonl) and optional model response files (in final_model_responses) used in the benchmark.
-- `results/` : Stores the benchmark's output, including evaluation scores and metrics, saved to evaluation_results.txt.
-- `src/` : Core functionality for the benchmark
-  - `models/` : Houses model provider classes:
-  
+
+```
+├── data/
+│   ├── benchmark_questions.jsonl      # Benchmark conversation dataset
+│   ├── response_template.jsonl        # Template for response file format
+│   └── final_model_responses/         # Pre-generated model responses
+├── output/                            # Generated model responses output
+├── results/                           # Evaluation results output
+├── src/
+│   ├── models/
+│   │   ├── base.py                    # Abstract ModelProvider base class
+│   │   └── openai.py                  # OpenAI-compatible API model provider
+│   ├── conversation.py                # Conversation dataclass definition
+│   ├── data_loader.py                 # Data loading and response generation
+│   ├── evaluator.py                   # Multi-judge evaluation logic
+│   └── result_parser.py               # Result parsing and summary generation
+├── main.py                            # Main entry point
+├── models.yaml                        # Model configurations (API keys, endpoints)
+└── requirements.txt                   # Python dependencies
+```
+
 ## **Setup Instructions**
+
 1. **Clone the Repository**
    ```bash
-   git clone some_directory
+   git clone <repository-url>
    cd multi-challenge
    ```
+
 2. **Install Requirements**
    ```bash
    pip install -r requirements.txt
    ```
-3. **Create `.env` File**
-   Create a `.env` file in the root directory with your API keys. For example:
+
+3. **Configure Environment Variables**
+   
+   Create a `.env` file in the root directory with your API keys. The keys are referenced in `models.yaml`:
    ```plaintext
-   OPENAI_API_KEY=your-openai-api-key (REQUIRED)
-   HUGGINGFACE_TOKEN=your-huggingface-token
+   OPENROUTER_API_KEY=your-openrouter-api-key
+   DEEPSEEK_API_KEY=your-deepseek-api-key
+   GLM_API_KEY=your-glm-api-key
+   MOONSHOT_API_KEY=your-moonshot-api-key
+   MINIMAX_API_KEY=your-minimax-api-key
    ```
+
 ## **Usage**
-### **1. Using Pre-Generated Responses**
-If you already have model responses and want to evaluate them:
-```bash
-python main.py --responses-file data/model_responses.jsonl --output-file results/evaluation_results.txt
-```
-Make sure to format the responses file as shown in data/responses_template.jsonl
 
-### **2. Generating Responses with a Model**
-To dynamically generate responses using a supported model provider:
+The benchmark operates in two modes: **Response Generation** and **Evaluation**.
+
+### **1. Generate Model Responses**
+
+Generate responses for benchmark conversations using a model defined in `models.yaml`:
+
 ```bash
-python main.py --model-provider openai --provider-args model=gpt-4o temp=0 --output-file results/evaluation_results.txt
+python main.py --model-id anthropic/claude-sonnet-4.5
 ```
 
-### **3. Using Multiple Attempts**
-To evaluate model performance with multiple attempts per conversation:
-```bash
-python main.py --model-provider openai --attempts 3 --output-file results/evaluation_results.txt
-```
-This will generate 3 responses per conversation and consider it successful if any attempt passes.
+- Responses are saved to `output/<model_id>_<timestamp>.json`
+- Supports checkpoint resumption: if the output file exists, already-completed questions are skipped
 
-### **4. Generating Detailed Raw Output**
-To save comprehensive evaluation details including all responses and judgments:
+Specify a custom output file:
 ```bash
-python main.py --model-provider openai --attempts 3 --output-file results/evaluation_results.txt --raw results/detailed_results.csv
+python main.py --model-id openai/gpt-5.2 --responses-file my_responses.json
+```
+
+Limit the number of tasks:
+```bash
+python main.py --model-id deepseek-chat --num-tasks 10
+```
+
+### **2. Evaluate Responses**
+
+Evaluate pre-generated responses using a multi-judge system (3 evaluator models by default):
+
+```bash
+python main.py --evaluate-file output/my_responses.json
+```
+
+- Evaluation uses 3 judge models (configurable via `--evaluator-1`, `--evaluator-2`, `--evaluator-3`)
+- Final verdict is determined by majority vote
+- Results are saved to `results/<model_id>_<timestamp>_evaluation.json`
+
+Specify custom evaluators:
+```bash
+python main.py --evaluate-file output/responses.json \
+    --evaluator-1 deepseek-chat \
+    --evaluator-2 glm-4.6 \
+    --evaluator-3 kimi-k2-0905-preview
+```
+
+### **3. Parallel Processing**
+
+Use multiple workers for faster processing:
+```bash
+python main.py --model-id anthropic/claude-sonnet-4.5 --max-workers 10
+python main.py --evaluate-file output/responses.json --max-workers 5
 ```
 
 ### **Command-Line Arguments**
-- `--output-file`: Path to save the final evaluation results.
-- `--responses-file`: Path to a file containing pre-generated responses. (OPTIONAL)
-- `--model-provider`: Specify the model provider for generating responses (`huggingface`, `openai`, etc.).
-- `--provider-args`: Model-specific arguments in key=value format (e.g., `model_path=/path/to/model`).
-- `--attempts`: Number of attempts to generate for each conversation. Defaults to 1. 
-- `--max-workers_response_gen`: Number of concurrent workers to multi-thread response generation. Defaults to 1.
-- `--max-workers_eval`: Number of concurrent workers to multi-thread response evaluation. Defaults to 1.
-- `--raw`: Path to save detailed raw output including all responses and evaluations. (OPTIONAL)
 
-### **Evaluation Results**
-The evaluation results include:
-1. **In evaluation_results.txt:**
-   - Overall Score: Percentage of conversations where at least one attempt meets the criteria
-   - Axis Scores: Per-axis scores based on number of attempts
+| Argument | Description | Default |
+|----------|-------------|---------|
+| `--model-id` | Model ID for response generation (must exist in `models.yaml`) | `anthropic/claude-sonnet-4.5` |
+| `--responses-file` | Custom path for response output file | Auto-generated |
+| `--evaluate-file` | Path to responses file for evaluation | - |
+| `--output-file` | Path to save evaluation results | Auto-generated |
+| `--evaluator-1` | First evaluator model ID | `deepseek-chat` |
+| `--evaluator-2` | Second evaluator model ID | `glm-4.6` |
+| `--evaluator-3` | Third evaluator model ID | `kimi-k2-0905-preview` |
+| `--num-tasks` | Limit to first N tasks from benchmark | All tasks |
+| `--max-workers` | Number of parallel workers for LLM calls | `5` |
 
-2. **In detailed_results.txt (if --raw is specified):**
-   - Complete conversation history
-   - All model responses for each attempt
-   - Judge's verdicts and reasoning
-   - Expected pass criteria
-   - Per-conversation pass/fail statistics
----
+### **Evaluation System**
+
+The evaluation uses a **multi-judge majority voting** system:
+
+1. Each response is evaluated by 3 independent judge models
+2. Each judge outputs a `YES` or `NO` verdict based on the pass criteria
+3. Final verdict is determined by majority vote (2/3 or 3/3)
+4. A conversation passes if the final verdict matches the expected `PASS_CRITERIA`
+
+### **Output Format**
+
+**Response File** (`output/*.json`):
+```json
+{"QUESTION_ID": 1, "RESPONSE": ["model response text"], "TOKEN_COUNT": 1234}
+```
+
+**Evaluation File** (`results/*_evaluation.json`):
+```json
+{
+    "SUMMARY": {
+        "overall_score": 75.5,
+        "axis_scores": {"REFINEMENT": 80.0, "COHERENCE": 70.0, ...}
+    }
+}
+{"question_id": 1, "axis": "REFINEMENT", "passed": true, "judge_1_verdict": "YES", ...}
+```
+
+## **Model Configuration**
+
+Models are configured in `models.yaml`. Each model entry includes:
+
+```yaml
+models:
+  - name: model-name
+    temperature: 0.0
+    base_url: https://api.example.com/v1
+    api_key: "${ENV_VAR_NAME}"
+    extra_body: {}  # Optional API-specific parameters
+    cost_1m_token_dollar:
+      prompt_price: 2.00
+      completion_price: 4.00
+```
+
+## **Benchmark Axes**
+
+MultiChallenge evaluates models across four axes:
+- **REFINEMENT**: Ability to refine responses based on user feedback
+- **EXPLICIT IF**: Handling explicit conditional instructions
+- **COHERENCE**: Maintaining coherent context across turns
+- **RECOLLECTION**: Recalling information from earlier in the conversation
+
 ## **Project Dependencies**
-See `requirements.txt` for a complete list of required packages.
----
+
+```
+pydantic
+python-dotenv
+tqdm
+openai
+pyyaml
+json-repair
+```
+
+See `requirements.txt` for the complete list.
