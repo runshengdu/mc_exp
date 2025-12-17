@@ -100,15 +100,19 @@ class DataLoader:
         with open(output_file, 'w', encoding='utf-8') as f:
             for question_id, response in self.responses.items():
                 record = {"QUESTION_ID": question_id, "RESPONSE": ensure_list(response)}
+                if question_id in self.token_counts:
+                    record["TOKEN_COUNT"] = self.token_counts[question_id]
                 f.write(json.dumps(record, ensure_ascii=False, indent=4) + "\n")
 
-    def append_response(self, output_file: str, question_id, response) -> None:
+    def append_response(self, output_file: str, question_id, response, token_count: int = None) -> None:
         """Appends a single question's responses to a JSONL file."""
         output_dir = os.path.dirname(output_file)
         if output_dir:
             os.makedirs(output_dir, exist_ok=True)
 
         record = {"QUESTION_ID": question_id, "RESPONSE": ensure_list(response)}
+        if token_count is not None:
+            record["TOKEN_COUNT"] = token_count
         with open(output_file, 'a', encoding='utf-8') as f:
             f.write(json.dumps(record, ensure_ascii=False, indent=4) + "\n")
 
@@ -162,7 +166,7 @@ class DataLoader:
                 self.responses[question_id] = responses
                 self.token_counts[question_id] = token_count
                 with write_lock:
-                    self.append_response(output_file, question_id, responses)
+                    self.append_response(output_file, question_id, responses, token_count)
 
         return self.responses
 

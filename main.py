@@ -52,7 +52,7 @@ def main():
     
     parser.add_argument('--responses-file', type=str,
                         help="Path to the JSONL file containing model responses.")
-    parser.add_argument('--model-id', type=str, default='anthropic/claude-sonnet-4.5',
+    parser.add_argument('--model-id', type=str, default='glm-4.6',
                         help="Model id to use for response generation (must exist in models.yaml).")
     parser.add_argument('--evaluator-1', type=str, default='deepseek-chat',
                         help="Model id to use for evaluation (must exist in models.yaml).")
