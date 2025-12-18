@@ -2,6 +2,7 @@ from pydantic import BaseModel
 from typing import List, Dict, Any, Literal, Optional
 import threading
 import json
+import random
 from json_repair import repair_json
 from src.models.openai import OpenAIModel
 from src.data_loader import ensure_list
@@ -106,14 +107,47 @@ class Evaluator:
                 prompt = JUDGE_PROMPT.format(response, target_question)
 
                 models = self._get_eval_models()
+                model_names = [cfg.get('name', f'evaluator_{i+1}') for i, cfg in enumerate(self._evaluator_configs)]
                 judge_results = []
-                for model in models:
-                    judgement = model.generate([{"role": "user", "content": prompt}])
-                    parsed = self._parse_judge_response(str(judgement))
-                    judge_results.append(parsed)
-
-                yes_count = sum(1 for r in judge_results if r.verdict == "YES")
-                no_count = len(judge_results) - yes_count
+                failed_count = 0
+                successful_model_indices = []
+                failed_evaluators = []
+                backup_used = []
+                
+                for idx, model in enumerate(models):
+                    try:
+                        judgement = model.generate([{"role": "user", "content": prompt}])
+                        parsed = self._parse_judge_response(str(judgement))
+                        judge_results.append(parsed)
+                        successful_model_indices.append(idx)
+                    except Exception as e:
+                        failed_count += 1
+                        judge_results.append(None)
+                        failed_evaluators.append(model_names[idx])
+                
+                if failed_count == len(models):
+                    raise RuntimeError("All evaluators failed")
+                
+                while failed_count > 0 and successful_model_indices:
+                    backup_idx = random.choice(successful_model_indices)
+                    backup_model = models[backup_idx]
+                    try:
+                        judgement = backup_model.generate([{"role": "user", "content": prompt}])
+                        parsed = self._parse_judge_response(str(judgement))
+                        for i, r in enumerate(judge_results):
+                            if r is None:
+                                judge_results[i] = parsed
+                                failed_count -= 1
+                                backup_used.append(model_names[backup_idx])
+                                break
+                    except Exception:
+                        successful_model_indices.remove(backup_idx)
+                        if not successful_model_indices:
+                            raise RuntimeError("All evaluators failed during retry")
+                
+                valid_results = [r for r in judge_results if r is not None]
+                yes_count = sum(1 for r in valid_results if r.verdict == "YES")
+                no_count = len(valid_results) - yes_count
                 final_verdict = "YES" if yes_count > no_count else "NO"
 
                 eval_entry = {
@@ -123,8 +157,12 @@ class Evaluator:
                     'passed': final_verdict == pass_criteria
                 }
                 for i, jr in enumerate(judge_results):
-                    eval_entry[f'judge_{i+1}_verdict'] = jr.verdict
-                    eval_entry[f'judge_{i+1}_reasoning'] = jr.reasoning
+                    if jr is not None:
+                        eval_entry[f'judge_{i+1}_verdict'] = jr.verdict
+                        eval_entry[f'judge_{i+1}_reasoning'] = jr.reasoning
+                    else:
+                        eval_entry[f'judge_{i+1}_verdict'] = 'ERROR'
+                        eval_entry[f'judge_{i+1}_reasoning'] = 'Evaluator failed'
 
                 evaluations.append(eval_entry)
 
@@ -132,7 +170,7 @@ class Evaluator:
         passes = sum(1 for e in evaluations if e.get('passed'))
         final_status = f"{'PASS' if passes > 0 else 'FAIL'} ({passes}/{attempts} attempts passed)"
 
-        return {
+        result = {
             'QUESTION_ID': conversation.question_id,
             'AXIS': conversation.axis,
             'TARGET_QUESTION': conversation.target_question,
@@ -141,3 +179,7 @@ class Evaluator:
             'EVALUATIONS': evaluations,
             'FINAL_STATUS': final_status
         }
+        if responses and 'failed_evaluators' in locals() and failed_evaluators:
+            result['_failed_evaluators'] = failed_evaluators
+            result['_backup_used'] = backup_used
+        return result

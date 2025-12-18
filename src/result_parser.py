@@ -2,7 +2,7 @@ from collections import defaultdict
 from typing import List, Dict
 import json
 import os
-from src.data_loader import ensure_list
+from src.data_loader import ensure_list, sanitize_unusual_line_terminators
 
 class ResultParser:
     def __init__(self, evaluation_results):
@@ -89,9 +89,9 @@ class ResultParser:
 
         tmp_path = output_file + '.tmp'
         with open(tmp_path, 'w', encoding='utf-8') as f:
-            f.write(json.dumps({'SUMMARY': summary}, ensure_ascii=False, indent=4) + "\n")
+            f.write(json.dumps(sanitize_unusual_line_terminators({'SUMMARY': summary}), ensure_ascii=False, indent=4) + "\n")
             for obj in records:
-                f.write(json.dumps(obj, ensure_ascii=False, indent=4) + "\n")
+                f.write(json.dumps(sanitize_unusual_line_terminators(obj), ensure_ascii=False, indent=4) + "\n")
         os.replace(tmp_path, output_file)
     
     @staticmethod
@@ -134,5 +134,6 @@ class ResultParser:
                         r = r.splitlines()
                     row[f'judge_{j}_verdict'] = v
                     row[f'judge_{j}_reasoning'] = r
+                row = sanitize_unusual_line_terminators(row)
                 f.write(json.dumps(row, ensure_ascii=False, indent=4) + "\n")
             f.flush()

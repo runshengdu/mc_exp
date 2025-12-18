@@ -64,34 +64,7 @@ class OpenAIModel(ModelProvider):
         extra.pop('model', None)
         extra.pop('messages', None)
         extra.pop('temperature', None)
-
-        stream = bool(extra.pop('stream', True))
-
-        if stream:
-            stream_resp = self.client.chat.completions.create(
-                stream=True,
-                model=self.model,
-                messages=prompt,
-                temperature=self.temp,
-                stream_options={"include_usage": True} if return_usage else None,
-                **extra
-            )
-            chunks = []
-            token_count = 0
-            for chunk in stream_resp:
-                if return_usage and getattr(chunk, 'usage', None):
-                    usage = chunk.usage
-                    token_count = (getattr(usage, 'prompt_tokens', 0) or 0) + (getattr(usage, 'completion_tokens', 0) or 0)
-                if not getattr(chunk, 'choices', None):
-                    continue
-                delta = getattr(chunk.choices[0], 'delta', None)
-                if delta is None:
-                    continue
-                content = getattr(delta, 'content', None)
-                if content:
-                    chunks.append(content)
-            content = ''.join(chunks)
-            return (content, token_count) if return_usage else content
+        extra.pop('stream', None)
 
         response = self.client.chat.completions.create(
             model=self.model,

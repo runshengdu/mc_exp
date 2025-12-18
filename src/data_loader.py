@@ -17,6 +17,18 @@ def ensure_list(value: Any) -> List:
     return value
 
 
+def sanitize_unusual_line_terminators(value: Any) -> Any:
+    if isinstance(value, str):
+        return value.replace("\u2028", "\n").replace("\u2029", "\n")
+    if isinstance(value, list):
+        return [sanitize_unusual_line_terminators(v) for v in value]
+    if isinstance(value, tuple):
+        return tuple(sanitize_unusual_line_terminators(v) for v in value)
+    if isinstance(value, dict):
+        return {k: sanitize_unusual_line_terminators(v) for k, v in value.items()}
+    return value
+
+
 class DataLoader:
     def __init__(self, input_file: str):
         self.input_file = input_file
@@ -102,6 +114,7 @@ class DataLoader:
                 record = {"QUESTION_ID": question_id, "RESPONSE": ensure_list(response)}
                 if question_id in self.token_counts:
                     record["TOKEN_COUNT"] = self.token_counts[question_id]
+                record = sanitize_unusual_line_terminators(record)
                 f.write(json.dumps(record, ensure_ascii=False, indent=4) + "\n")
 
     def append_response(self, output_file: str, question_id, response, token_count: int = None) -> None:
@@ -113,6 +126,7 @@ class DataLoader:
         record = {"QUESTION_ID": question_id, "RESPONSE": ensure_list(response)}
         if token_count is not None:
             record["TOKEN_COUNT"] = token_count
+        record = sanitize_unusual_line_terminators(record)
         with open(output_file, 'a', encoding='utf-8') as f:
             f.write(json.dumps(record, ensure_ascii=False, indent=4) + "\n")
 

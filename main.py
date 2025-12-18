@@ -52,7 +52,7 @@ def main():
     
     parser.add_argument('--responses-file', type=str,
                         help="Path to the JSONL file containing model responses.")
-    parser.add_argument('--model-id', type=str, default='glm-4.6',
+    parser.add_argument('--model-id', type=str, default='anthropic/claude-sonnet-4.5',
                         help="Model id to use for response generation (must exist in models.yaml).")
     parser.add_argument('--evaluator-1', type=str, default='deepseek-chat',
                         help="Model id to use for evaluation (must exist in models.yaml).")
@@ -62,7 +62,7 @@ def main():
                         help="Model id to use for evaluation (must exist in models.yaml).")
     parser.add_argument('--num-tasks', type=int,
                         help="If provided, only run the first k tasks from the benchmark dataset.")
-    parser.add_argument('--max-workers', type=int, default=10,
+    parser.add_argument('--max-workers', type=int, default=15,
                         help="Number of parallel workers to use for all LLM calls (response generation and evaluation).")
     parser.add_argument('--evaluate-file', type=str,
                         help="Responses file for evaluation.")
@@ -71,7 +71,7 @@ def main():
 
     args = parser.parse_args()
 
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M")
     model_id_safe = args.model_id.replace('/', '_')
 
     if args.responses_file and (args.evaluate_file or args.output_file):
@@ -83,7 +83,7 @@ def main():
     data_loader.load_data(num_tasks=args.num_tasks)
 
     if args.evaluate_file:
-        evaluate_file = _resolve_path(args.evaluate_file, 'output')
+        evaluate_file = _resolve_path(args.evaluate_file, 'responses')
 
         if not os.path.exists(evaluate_file):
             parser.error("The --evaluate-file path does not exist")
@@ -97,7 +97,12 @@ def main():
             load_model_config(args.evaluator_3, config_path),
         ]
 
-        output_file = args.output_file or os.path.join('results', f"{model_id_safe}_{timestamp}_evaluation.json")
+        if args.output_file:
+            output_file = _resolve_path(args.output_file, 'results')
+        else:
+            eval_base = os.path.basename(evaluate_file)
+            eval_stem, _ = os.path.splitext(eval_base)
+            output_file = os.path.join('results', f"{eval_stem}_evaluation.jsonl")
         output_dir = os.path.dirname(output_file)
         if output_dir:
             os.makedirs(output_dir, exist_ok=True)
@@ -155,6 +160,11 @@ def main():
                         print(f"Error evaluating question {conv.question_id}: {e}")
                         raise SystemExit(1)
 
+                    if record.get('_failed_evaluators'):
+                        failed = record.pop('_failed_evaluators')
+                        backup = record.pop('_backup_used', [])
+                        tqdm.write(f"[{conv.question_id}] Failed: {failed}, Backup: {backup}")
+
                     ResultParser.append_evaluation_record(output_file, conv, record, token_counts.get(conv.question_id))
                     evaluated_question_ids.add(conv.question_id)
 
@@ -164,9 +174,9 @@ def main():
 
     responses_output_file = None
     if args.responses_file:
-        responses_output_file = _resolve_path(args.responses_file, 'output')
+        responses_output_file = _resolve_path(args.responses_file, 'reponses')
     else:
-        responses_output_file = os.path.join('output', f"{model_id_safe}_{timestamp}.json")
+        responses_output_file = os.path.join('reponses', f"{model_id_safe}_{timestamp}.jsonl")
     completed_question_ids = set()
     if os.path.exists(responses_output_file):
         data_loader.load_responses(responses_output_file)
