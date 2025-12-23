@@ -52,7 +52,7 @@ def main():
     
     parser.add_argument('--responses-file', type=str,
                         help="Path to the JSONL file containing model responses.")
-    parser.add_argument('--model-id', type=str, default='anthropic/claude-sonnet-4.5',
+    parser.add_argument('--model-id', type=str, default='google/gemini-3-flash-preview',
                         help="Model id to use for response generation (must exist in models.yaml).")
     parser.add_argument('--evaluator-1', type=str, default='deepseek-chat',
                         help="Model id to use for evaluation (must exist in models.yaml).")
@@ -62,7 +62,7 @@ def main():
                         help="Model id to use for evaluation (must exist in models.yaml).")
     parser.add_argument('--num-tasks', type=int,
                         help="If provided, only run the first k tasks from the benchmark dataset.")
-    parser.add_argument('--max-workers', type=int, default=15,
+    parser.add_argument('--max-workers', type=int, default=30,
                         help="Number of parallel workers to use for all LLM calls (response generation and evaluation).")
     parser.add_argument('--evaluate-file', type=str,
                         help="Responses file for evaluation.")
@@ -174,9 +174,9 @@ def main():
 
     responses_output_file = None
     if args.responses_file:
-        responses_output_file = _resolve_path(args.responses_file, 'reponses')
+        responses_output_file = _resolve_path(args.responses_file, 'responses')
     else:
-        responses_output_file = os.path.join('reponses', f"{model_id_safe}_{timestamp}.jsonl")
+        responses_output_file = os.path.join('responses', f"{model_id_safe}_{timestamp}.jsonl")
     completed_question_ids = set()
     if os.path.exists(responses_output_file):
         data_loader.load_responses(responses_output_file)
