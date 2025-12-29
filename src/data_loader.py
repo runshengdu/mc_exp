@@ -31,6 +31,29 @@ def sanitize_unusual_line_terminators(value: Any) -> Any:
     return value
 
 
+def _parse_json_objects(content: str, response_file: str):
+    """Parse one or more JSON objects from the given string, raising on the first error."""
+    decoder = json.JSONDecoder()
+    objs = []
+    idx = 0
+    length = len(content)
+
+    while idx < length:
+        while idx < length and content[idx].isspace():
+            idx += 1
+        if idx >= length:
+            break
+        try:
+            obj, end_idx = decoder.raw_decode(content, idx)
+        except json.JSONDecodeError as e:
+            # Char position is 1-indexed to match typical error messages
+            raise ValueError(f"Invalid JSON starting at char {idx + 1} in {response_file}: {e}") from e
+        objs.append(obj)
+        idx = end_idx
+
+    return objs
+
+
 class DataLoader:
     def __init__(self, input_file: str):
         self.input_file = input_file
@@ -58,26 +81,22 @@ class DataLoader:
         """Loads model responses from the provided file."""
         if response_file:
             with open(response_file, 'r', encoding='utf-8') as f:
-                self.responses = {}
-                self.token_counts = {}
-                for line_no, line in enumerate(f, start=1):
-                    line = line.strip()
-                    if not line:
-                        continue
-                    try:
-                        item = json.loads(line)
-                    except json.JSONDecodeError as e:
-                        raise ValueError(f"Invalid JSON at line {line_no} in {response_file}: {e}") from e
+                content = f.read()
 
-                    if not isinstance(item, dict):
-                        continue
-                    qid = item.get('QUESTION_ID')
-                    resp = item.get('RESPONSE')
-                    if qid is None or resp is None:
-                        continue
-                    self.responses[qid] = ensure_list(resp)
-                    if 'TOKEN_COUNT' in item:
-                        self.token_counts[qid] = item['TOKEN_COUNT']
+            self.responses = {}
+            self.token_counts = {}
+
+            items = _parse_json_objects(content, response_file)
+            for item in items:
+                if not isinstance(item, dict):
+                    continue
+                qid = item.get('QUESTION_ID')
+                resp = item.get('RESPONSE')
+                if qid is None or resp is None:
+                    continue
+                self.responses[qid] = ensure_list(resp)
+                if 'TOKEN_COUNT' in item:
+                    self.token_counts[qid] = item['TOKEN_COUNT']
         return self.responses
 
     def save_responses(self, output_file: str) -> None:
