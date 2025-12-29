@@ -1,12 +1,14 @@
 import json
-from typing import List, Dict, Any
-from src.conversation import Conversation
-from src.models.base import ModelProvider
-from tqdm import tqdm
-from concurrent.futures import ThreadPoolExecutor, as_completed
 import os
 import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from typing import Any, Dict, List
 
+from tqdm import tqdm
+
+from src.conversation import Conversation
+from src.models.base import ModelProvider
+from src.utils import submit_with_mapping
 
 def ensure_list(value: Any) -> List:
     """Ensure value is a list. If string, wrap in list. If None, return empty list."""
@@ -56,51 +58,26 @@ class DataLoader:
         """Loads model responses from the provided file."""
         if response_file:
             with open(response_file, 'r', encoding='utf-8') as f:
-                first_chunk = f.read(2048)
-                f.seek(0)
-                first_non_ws = next((c for c in first_chunk if not c.isspace()), '')
-
                 self.responses = {}
                 self.token_counts = {}
-                if first_non_ws == '[':
-                    items = json.load(f)
-                    for item in items:
-                        qid = item['QUESTION_ID']
-                        self.responses[qid] = ensure_list(item['RESPONSE'])
-                        if 'TOKEN_COUNT' in item:
-                            self.token_counts[qid] = item['TOKEN_COUNT']
-                else:
+                for line_no, line in enumerate(f, start=1):
+                    line = line.strip()
+                    if not line:
+                        continue
                     try:
-                        for line in f:
-                            line = line.strip()
-                            if not line:
-                                continue
-                            item = json.loads(line)
-                            qid = item['QUESTION_ID']
-                            self.responses[qid] = ensure_list(item['RESPONSE'])
-                            if 'TOKEN_COUNT' in item:
-                                self.token_counts[qid] = item['TOKEN_COUNT']
-                    except json.JSONDecodeError:
-                        f.seek(0)
-                        content = f.read()
-                        decoder = json.JSONDecoder()
-                        idx = 0
-                        length = len(content)
-                        while idx < length:
-                            while idx < length and content[idx].isspace():
-                                idx += 1
-                            if idx >= length:
-                                break
-                            item, idx = decoder.raw_decode(content, idx)
-                            if not isinstance(item, dict):
-                                continue
-                            qid = item.get('QUESTION_ID') or item.get('question_id')
-                            resp = item.get('RESPONSE') or item.get('response')
-                            if qid is None or resp is None:
-                                continue
-                            self.responses[qid] = ensure_list(resp)
-                            if 'TOKEN_COUNT' in item:
-                                self.token_counts[qid] = item['TOKEN_COUNT']
+                        item = json.loads(line)
+                    except json.JSONDecodeError as e:
+                        raise ValueError(f"Invalid JSON at line {line_no} in {response_file}: {e}") from e
+
+                    if not isinstance(item, dict):
+                        continue
+                    qid = item.get('QUESTION_ID')
+                    resp = item.get('RESPONSE')
+                    if qid is None or resp is None:
+                        continue
+                    self.responses[qid] = ensure_list(resp)
+                    if 'TOKEN_COUNT' in item:
+                        self.token_counts[qid] = item['TOKEN_COUNT']
         return self.responses
 
     def save_responses(self, output_file: str) -> None:
@@ -147,6 +124,12 @@ class DataLoader:
 
         write_lock = threading.Lock()
 
+        def _prompt_skip(question_id, error: Exception) -> bool:
+            user_input = input(
+                f"Generation failed for QUESTION_ID {question_id} ({error}). Skip and continue? [y/N]: "
+            ).strip().lower()
+            return user_input.startswith('y')
+
         def generate_conversation_responses(conversation):
             responses = []
             total_tokens = 0
@@ -170,13 +153,20 @@ class DataLoader:
             return self.responses
 
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
-            futures = [
-                executor.submit(generate_conversation_responses, conversation)
-                for conversation in conversations_to_run
-            ]
+            future_to_conv = submit_with_mapping(executor, conversations_to_run, generate_conversation_responses)
 
-            for future in tqdm(as_completed(futures), total=len(futures), desc="Generating responses"):
-                question_id, responses, token_count = future.result()
+            for future in tqdm(as_completed(future_to_conv), total=len(future_to_conv), desc="Generating responses"):
+                question_id = getattr(future_to_conv.get(future), "question_id", None)
+                try:
+                    question_id, responses, token_count = future.result()
+                except Exception as e:
+                    if _prompt_skip(question_id, e):
+                        print(f"Skipping QUESTION_ID {question_id} and continuing.")
+                        continue
+                    print(f"Aborting at QUESTION_ID {question_id}.")
+                    executor.shutdown(wait=False, cancel_futures=True)
+                    raise
+
                 self.responses[question_id] = responses
                 self.token_counts[question_id] = token_count
                 with write_lock:

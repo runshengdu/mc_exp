@@ -1,21 +1,27 @@
 import argparse
-import os
 import json
+import os
 import re
-import yaml
-from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import datetime
+
+import yaml
 from tqdm import tqdm
+
 from src.data_loader import DataLoader
 from src.evaluator import Evaluator
 from src.models.openai import OpenAIModel
 from src.result_parser import ResultParser
+from src.utils import submit_with_mapping
 
 def _resolve_path(file_path: str, default_dir: str) -> str:
     """Resolve file path: if not absolute and no directory, prepend default_dir."""
     if not os.path.isabs(file_path) and not os.path.dirname(file_path):
         return os.path.join(default_dir, file_path)
     return file_path
+
+def _models_config_path() -> str:
+    return os.path.join(os.path.dirname(os.path.abspath(__file__)), 'models.yaml')
 
 def _resolve_env_vars(obj):
     if isinstance(obj, dict):
@@ -45,6 +51,21 @@ def load_model_config(model_id: str, config_path: str):
         raise ValueError(f"Model id {model_id} not found in {config_path}")
 
     return _resolve_env_vars(match)
+
+def _load_evaluated_question_ids(output_file: str) -> set:
+    evaluated_question_ids = set()
+    if os.path.exists(output_file):
+        with open(output_file, 'r', encoding='utf-8') as f:
+            content = f.read()
+        for item in ResultParser._parse_json_objects(content):
+            if isinstance(item, dict) and 'SUMMARY' in item:
+                continue
+            qid = None
+            if isinstance(item, dict):
+                qid = item.get('question_id') or item.get('QUESTION_ID')
+            if qid is not None:
+                evaluated_question_ids.add(qid)
+    return evaluated_question_ids
 
 def main():
 
@@ -90,7 +111,7 @@ def main():
 
         data_loader.load_responses(evaluate_file)
 
-        config_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'models.yaml')
+        config_path = _models_config_path()
         evaluator_cfgs = [
             load_model_config(args.evaluator_1, config_path),
             load_model_config(args.evaluator_2, config_path),
@@ -107,18 +128,7 @@ def main():
         if output_dir:
             os.makedirs(output_dir, exist_ok=True)
 
-        evaluated_question_ids = set()
-        if os.path.exists(output_file):
-            with open(output_file, 'r', encoding='utf-8') as f:
-                content = f.read()
-            for item in ResultParser._parse_json_objects(content):
-                if isinstance(item, dict) and 'SUMMARY' in item:
-                    continue
-                qid = None
-                if isinstance(item, dict):
-                    qid = item.get('question_id') or item.get('QUESTION_ID')
-                if qid is not None:
-                    evaluated_question_ids.add(qid)
+        evaluated_question_ids = _load_evaluated_question_ids(output_file)
 
         responses = data_loader.get_responses()
         token_counts = data_loader.get_token_counts()
@@ -143,17 +153,14 @@ def main():
 
         if conversations_to_eval:
             with ThreadPoolExecutor(max_workers=args.max_workers) as executor:
-                future_to_conv = {
-                    executor.submit(
-                        evaluator.evaluate_conversation,
-                        conv,
-                        responses.get(conv.question_id, [])
-                    ): conv
-                    for conv in conversations_to_eval
-                }
+                def _eval_one(conv):
+                    return evaluator.evaluate_conversation(conv, responses.get(conv.question_id, []))
+
+                future_to_conv = submit_with_mapping(executor, conversations_to_eval, _eval_one)
 
                 for future in tqdm(as_completed(future_to_conv), total=len(future_to_conv), desc="Evaluating"):
                     conv = future_to_conv[future]
+
                     try:
                         record = future.result()
                     except Exception as e:
@@ -192,7 +199,7 @@ def main():
 
     if missing_question_ids:
 
-        config_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'models.yaml')
+        config_path = _models_config_path()
         model_cfg = load_model_config(args.model_id, config_path)
 
         model_provider = OpenAIModel.from_model_config(args.model_id, model_cfg)
