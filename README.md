@@ -57,10 +57,10 @@ The benchmark operates in two modes: **Response Generation** and **Evaluation**.
 Generate responses for benchmark conversations using a model defined in `models.yaml`:
 
 ```bash
-python main.py --model-id anthropic/claude-sonnet-4.5
+python main.py --model-id doubao-seed-1-8-251228
 ```
 
-- Responses are saved to `output/<model_id>_<timestamp>.json`
+- Responses are saved to `responses/<model_id>_<timestamp>.jsonl`
 - Supports checkpoint resumption: if the output file exists, already-completed questions are skipped
 
 Specify a custom output file:
@@ -81,16 +81,14 @@ Evaluate pre-generated responses using a multi-judge system (3 evaluator models 
 python main.py --evaluate-file output/my_responses.json
 ```
 
-- Evaluation uses 3 judge models (configurable via `--evaluator-1`, `--evaluator-2`, `--evaluator-3`)
-- Final verdict is determined by majority vote
-- Results are saved to `results/<model_id>_<timestamp>_evaluation.json`
+- Evaluation uses comma-separated evaluator ids via `--evaluator` (allow 1, 3, or 5 models; default `deepseek-chat,glm-4.6,kimi-k2-0905-preview`)
+- Final verdict requires at least half-plus-one YES votes (majority for odd-sized panels)
+- Results are saved to `results/<responses_file_stem>_evaluation.jsonl` by default
 
 Specify custom evaluators:
 ```bash
 python main.py --evaluate-file output/responses.json \
-    --evaluator-1 deepseek-chat \
-    --evaluator-2 glm-4.6 \
-    --evaluator-3 kimi-k2-0905-preview
+    --evaluator deepseek-chat,glm-4.6,kimi-k2-0905-preview
 ```
 
 ### **3. Parallel Processing**
@@ -105,23 +103,21 @@ python main.py --evaluate-file output/responses.json --max-workers 5
 
 | Argument | Description | Default |
 |----------|-------------|---------|
-| `--model-id` | Model ID for response generation (must exist in `models.yaml`) | `anthropic/claude-sonnet-4.5` |
+| `--model-id` | Model ID for response generation (must exist in `models.yaml`) | `doubao-seed-1-8-251228` |
 | `--responses-file` | Custom path for response output file | Auto-generated |
 | `--evaluate-file` | Path to responses file for evaluation | - |
 | `--output-file` | Path to save evaluation results | Auto-generated |
-| `--evaluator-1` | First evaluator model ID | `deepseek-chat` |
-| `--evaluator-2` | Second evaluator model ID | `glm-4.6` |
-| `--evaluator-3` | Third evaluator model ID | `kimi-k2-0905-preview` |
+| `--evaluator` | Comma-separated evaluator model IDs (1, 3, or 5 entries; must exist in `models.yaml`) | `deepseek-chat,glm-4.6,kimi-k2-0905-preview` |
 | `--num-tasks` | Limit to first N tasks from benchmark | All tasks |
-| `--max-workers` | Number of parallel workers for LLM calls | `5` |
+| `--max-workers` | Number of parallel workers for LLM calls | `30` |
 
 ### **Evaluation System**
 
-The evaluation uses a **multi-judge majority voting** system:
+The evaluation uses a **multi-judge voting** system:
 
-1. Each response is evaluated by 3 independent judge models
+1. Each response is evaluated by an odd-sized panel of judge models (1, 3, or 5) configured via `--evaluator`
 2. Each judge outputs a `YES` or `NO` verdict based on the pass criteria
-3. Final verdict is determined by majority vote (2/3 or 3/3)
+3. Final verdict requires at least half-plus-one YES votes (e.g., 1/1, 2/3, or 3/5)
 4. A conversation passes if the final verdict matches the expected `PASS_CRITERIA`
 
 ### **Output Format**
