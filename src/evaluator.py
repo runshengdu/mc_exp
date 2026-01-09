@@ -148,7 +148,8 @@ class Evaluator:
                 valid_results = [r for r in judge_results if r is not None]
                 yes_count = sum(1 for r in valid_results if r.verdict == "YES")
                 no_count = len(valid_results) - yes_count
-                final_verdict = "YES" if yes_count > no_count else "NO"
+                required_votes = len(valid_results) // 2 + 1
+                final_verdict = "YES" if yes_count >= required_votes else "NO"
 
                 eval_entry = {
                     'attempt': attempt_idx,

@@ -67,6 +67,14 @@ def _load_evaluated_question_ids(output_file: str) -> set:
                 evaluated_question_ids.add(qid)
     return evaluated_question_ids
 
+def _parse_evaluators(evaluator_arg: str) -> list:
+    evaluators = [e.strip() for e in (evaluator_arg or '').split(',') if e.strip()]
+    if not evaluators:
+        raise ValueError("At least one evaluator must be provided")
+    if len(evaluators) not in {1, 3, 5}:
+        raise ValueError("Number of evaluators must be 1, 3, or 5")
+    return evaluators
+
 def main():
 
     parser = argparse.ArgumentParser(description="Run LLM benchmark for conversational ability.")
@@ -75,12 +83,9 @@ def main():
                         help="Path to the JSONL file containing model responses.")
     parser.add_argument('--model-id', type=str, default='doubao-seed-1-8-251228',
                         help="Model id to use for response generation (must exist in models.yaml).")
-    parser.add_argument('--evaluator-1', type=str, default='deepseek-chat',
-                        help="Model id to use for evaluation (must exist in models.yaml).")
-    parser.add_argument('--evaluator-2', type=str, default='glm-4.6',
-                        help="Model id to use for evaluation (must exist in models.yaml).")
-    parser.add_argument('--evaluator-3', type=str, default='kimi-k2-0905-preview',
-                        help="Model id to use for evaluation (must exist in models.yaml).")
+    parser.add_argument('--evaluator', type=str,
+                        default='deepseek-chat,glm-4.6,kimi-k2-0905-preview',
+                        help="Comma-separated evaluator model ids (1, 3, or 5 models; must exist in models.yaml).")
     parser.add_argument('--num-tasks', type=int,
                         help="If provided, only run the first k tasks from the benchmark dataset.")
     parser.add_argument('--max-workers', type=int, default=30,
@@ -91,6 +96,10 @@ def main():
                         help="Path to save evaluation output (responses + evaluations).")
 
     args = parser.parse_args()
+    try:
+        evaluator_ids = _parse_evaluators(args.evaluator)
+    except ValueError as e:
+        parser.error(str(e))
 
     timestamp = datetime.now().strftime("%Y%m%d_%H%M")
     model_id_safe = args.model_id.replace('/', '_')
@@ -112,11 +121,7 @@ def main():
         data_loader.load_responses(evaluate_file)
 
         config_path = _models_config_path()
-        evaluator_cfgs = [
-            load_model_config(args.evaluator_1, config_path),
-            load_model_config(args.evaluator_2, config_path),
-            load_model_config(args.evaluator_3, config_path),
-        ]
+        evaluator_cfgs = [load_model_config(eid, config_path) for eid in evaluator_ids]
 
         if args.output_file:
             output_file = _resolve_path(args.output_file, 'results')
