@@ -23,6 +23,9 @@ def _resolve_path(file_path: str, default_dir: str) -> str:
 def _models_config_path() -> str:
     return os.path.join(os.path.dirname(os.path.abspath(__file__)), 'models.yaml')
 
+def _evaluators_config_path() -> str:
+    return os.path.join(os.path.dirname(os.path.abspath(__file__)), 'evaluators.yaml')
+
 def _resolve_env_vars(obj):
     if isinstance(obj, dict):
         return {k: _resolve_env_vars(v) for k, v in obj.items()}
@@ -81,11 +84,11 @@ def main():
     
     parser.add_argument('--responses-file', type=str,
                         help="Path to the JSONL file containing model responses.")
-    parser.add_argument('--model-id', type=str, default='doubao-seed-1-8-251228',
+    parser.add_argument('--model-id', type=str, default='deepseek-reasoner',
                         help="Model id to use for response generation (must exist in models.yaml).")
     parser.add_argument('--evaluator', type=str,
-                        default='deepseek-chat,glm-4.6,kimi-k2-0905-preview',
-                        help="Comma-separated evaluator model ids (1, 3, or 5 models; must exist in models.yaml).")
+                        default='deepseek-chat,glm-4.7,doubao-seed-1-8-251228',
+                        help="Comma-separated evaluator model ids (1, 3, or 5 models; must exist in evaluators.yaml).")
     parser.add_argument('--num-tasks', type=int,
                         help="If provided, only run the first k tasks from the benchmark dataset.")
     parser.add_argument('--max-workers', type=int, default=30,
@@ -120,15 +123,13 @@ def main():
 
         data_loader.load_responses(evaluate_file)
 
-        config_path = _models_config_path()
+        config_path = _evaluators_config_path()
         evaluator_cfgs = [load_model_config(eid, config_path) for eid in evaluator_ids]
 
         if args.output_file:
             output_file = _resolve_path(args.output_file, 'results')
         else:
-            eval_base = os.path.basename(evaluate_file)
-            eval_stem, _ = os.path.splitext(eval_base)
-            output_file = os.path.join('results', f"{eval_stem}_evaluation.jsonl")
+            output_file = os.path.join('results', model_id_safe, f"{timestamp}.jsonl")
         output_dir = os.path.dirname(output_file)
         if output_dir:
             os.makedirs(output_dir, exist_ok=True)
@@ -188,7 +189,7 @@ def main():
     if args.responses_file:
         responses_output_file = _resolve_path(args.responses_file, 'responses')
     else:
-        responses_output_file = os.path.join('responses', f"{model_id_safe}_{timestamp}.jsonl")
+        responses_output_file = os.path.join('responses', model_id_safe, f"{timestamp}.jsonl")
     completed_question_ids = set()
     if os.path.exists(responses_output_file):
         data_loader.load_responses(responses_output_file)
