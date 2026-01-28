@@ -2,13 +2,14 @@ import argparse
 import json
 import os
 import re
+import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 
 import yaml
 from tqdm import tqdm
 
-from src.data_loader import DataLoader
+from src.data_loader import DataLoader, sanitize_unusual_line_terminators
 from src.evaluator import Evaluator
 from src.models.openai import OpenAIModel
 from src.result_parser import ResultParser
@@ -55,20 +56,88 @@ def load_model_config(model_id: str, config_path: str):
 
     return _resolve_env_vars(match)
 
-def _load_evaluated_question_ids(output_file: str) -> set:
-    evaluated_question_ids = set()
-    if os.path.exists(output_file):
-        with open(output_file, 'r', encoding='utf-8') as f:
-            content = f.read()
-        for item in ResultParser._parse_json_objects(content):
-            if isinstance(item, dict) and 'SUMMARY' in item:
+def _parse_json_objects_strict(content: str, file_path: str):
+    decoder = json.JSONDecoder()
+    objs = []
+    idx = 0
+    length = len(content)
+    while idx < length:
+        while idx < length:
+            if content[idx].isspace():
+                idx += 1
                 continue
-            qid = None
-            if isinstance(item, dict):
-                qid = item.get('question_id') or item.get('QUESTION_ID')
-            if qid is not None:
-                evaluated_question_ids.add(qid)
-    return evaluated_question_ids
+            # Some result files may accidentally contain literal escape sequences like "\\n"
+            # between JSON objects (or at EOF). A JSON value cannot start with a backslash, so
+            # treating these sequences as whitespace is safe and makes parsing more robust.
+            if content[idx] == "\\" and idx + 1 < length and content[idx + 1] in {"n", "r", "t"}:
+                idx += 2
+                continue
+            break
+        if idx >= length:
+            break
+        try:
+            obj, end_idx = decoder.raw_decode(content, idx)
+        except json.JSONDecodeError as e:
+            raise ValueError(f"Invalid JSON starting at char {idx + 1} in {file_path}: {e}") from e
+        objs.append(obj)
+        idx = end_idx
+    return objs
+
+def _load_results_file(file_path: str):
+    summary_obj = None
+    records_by_qid = {}
+    if not os.path.exists(file_path):
+        return summary_obj, records_by_qid
+    with open(file_path, 'r', encoding='utf-8') as f:
+        content = f.read()
+    for obj in _parse_json_objects_strict(content, file_path):
+        if not isinstance(obj, dict):
+            continue
+        if 'summary' in obj:
+            summary_obj = obj
+            continue
+        qid = obj.get('question_id')
+        if qid is None:
+            continue
+        records_by_qid[qid] = obj
+    return summary_obj, records_by_qid
+
+def _record_has_nonempty_evaluations(record: dict) -> bool:
+    if not isinstance(record, dict):
+        return False
+    evaluations = record.get('evaluations')
+    if evaluations is None:
+        return False
+    if isinstance(evaluations, list):
+        return len(evaluations) > 0
+    return True
+
+def _is_legacy_attempt_row(record: dict) -> bool:
+    if not isinstance(record, dict):
+        return False
+    legacy_markers = {'attempt_number', 'model_response', 'judge_verdict', 'final_result'}
+    return any(k in record for k in legacy_markers)
+
+def _write_results_file(file_path: str, summary_obj, records_by_qid: dict) -> None:
+    output_dir = os.path.dirname(file_path)
+    if output_dir:
+        os.makedirs(output_dir, exist_ok=True)
+
+    tmp_path = file_path + '.tmp'
+    with open(tmp_path, 'w', encoding='utf-8') as f:
+        if summary_obj is not None:
+            f.write(json.dumps(sanitize_unusual_line_terminators(summary_obj), ensure_ascii=False, indent=4) + "\n")
+        for qid in sorted(records_by_qid.keys()):
+            obj = records_by_qid[qid]
+            f.write(json.dumps(sanitize_unusual_line_terminators(obj), ensure_ascii=False, indent=4) + "\n")
+    for attempt in range(5):
+        try:
+            os.replace(tmp_path, file_path)
+            return
+        except PermissionError:
+            if attempt == 4:
+                raise
+            time.sleep(0.2 * (2 ** attempt))
 
 def _parse_evaluators(evaluator_arg: str) -> list:
     evaluators = [e.strip() for e in (evaluator_arg or '').split(',') if e.strip()]
@@ -83,20 +152,20 @@ def main():
     parser = argparse.ArgumentParser(description="Run LLM benchmark for conversational ability.")
     
     parser.add_argument('--responses-file', type=str,
-                        help="Path to the JSONL file containing model responses.")
-    parser.add_argument('--model-id', type=str, default='deepseek-reasoner',
+                        help="Path to the JSONL results file to write (responses + empty evaluations).")
+    parser.add_argument('--model-id', type=str, default='kimi-k2.5',
                         help="Model id to use for response generation (must exist in models.yaml).")
     parser.add_argument('--evaluator', type=str,
-                        default='deepseek-chat,glm-4.7,doubao-seed-1-8-251228',
+                        default='deepseek-chat,glm-4.7,kimi-k2.5',
                         help="Comma-separated evaluator model ids (1, 3, or 5 models; must exist in evaluators.yaml).")
     parser.add_argument('--num-tasks', type=int,
                         help="If provided, only run the first k tasks from the benchmark dataset.")
-    parser.add_argument('--max-workers', type=int, default=30,
-                        help="Number of parallel workers to use for all LLM calls (response generation and evaluation).")
+    parser.add_argument('--gen-max-workers', type=int, default=100,
+                        help="Number of parallel workers to use for response generation.")
+    parser.add_argument('--eval-max-workers', type=int, default=20,
+                        help="Number of parallel workers to use for evaluation.")
     parser.add_argument('--evaluate-file', type=str,
-                        help="Responses file for evaluation.")
-    parser.add_argument('--output-file', type=str,
-                        help="Path to save evaluation output (responses + evaluations).")
+                        help="Results file for evaluation (in-place update).")
 
     args = parser.parse_args()
     try:
@@ -107,8 +176,8 @@ def main():
     timestamp = datetime.now().strftime("%Y%m%d_%H%M")
     model_id_safe = args.model_id.replace('/', '_')
 
-    if args.responses_file and (args.evaluate_file or args.output_file):
-        parser.error("The --responses-file argument cannot be used together with --evaluate-file or --output-file")
+    if args.responses_file and args.evaluate_file:
+        parser.error("The --responses-file argument cannot be used together with --evaluate-file")
 
     input_file = './data/benchmark_questions.jsonl'
 
@@ -116,25 +185,20 @@ def main():
     data_loader.load_data(num_tasks=args.num_tasks)
 
     if args.evaluate_file:
-        evaluate_file = _resolve_path(args.evaluate_file, 'responses')
+        evaluate_file = _resolve_path(args.evaluate_file, 'results')
 
         if not os.path.exists(evaluate_file):
             parser.error("The --evaluate-file path does not exist")
 
+        summary_obj, records_by_qid = _load_results_file(evaluate_file)
+        if any(_is_legacy_attempt_row(r) for r in records_by_qid.values()):
+            parser.error("The --evaluate-file must be a generation results file (aggregated records), not a legacy evaluation JSONL")
         data_loader.load_responses(evaluate_file)
 
         config_path = _evaluators_config_path()
         evaluator_cfgs = [load_model_config(eid, config_path) for eid in evaluator_ids]
 
-        if args.output_file:
-            output_file = _resolve_path(args.output_file, 'results')
-        else:
-            output_file = os.path.join('results', model_id_safe, f"{timestamp}.jsonl")
-        output_dir = os.path.dirname(output_file)
-        if output_dir:
-            os.makedirs(output_dir, exist_ok=True)
-
-        evaluated_question_ids = _load_evaluated_question_ids(output_file)
+        evaluated_question_ids = {qid for qid, r in records_by_qid.items() if _record_has_nonempty_evaluations(r)}
 
         responses = data_loader.get_responses()
         token_counts = data_loader.get_token_counts()
@@ -158,7 +222,7 @@ def main():
         print(f"Evaluation: skipped {skipped_eval} conversations, remaining {remaining_eval} conversations")
 
         if conversations_to_eval:
-            with ThreadPoolExecutor(max_workers=args.max_workers) as executor:
+            with ThreadPoolExecutor(max_workers=args.eval_max_workers) as executor:
                 def _eval_one(conv):
                     return evaluator.evaluate_conversation(conv, responses.get(conv.question_id, []))
 
@@ -178,21 +242,28 @@ def main():
                         backup = record.pop('_backup_used', [])
                         tqdm.write(f"[{conv.question_id}] Failed: {failed}, Backup: {backup}")
 
-                    ResultParser.append_evaluation_record(output_file, conv, record, token_counts.get(conv.question_id))
+                    existing = records_by_qid.get(conv.question_id, {})
+                    updated = dict(existing) if isinstance(existing, dict) else {}
+                    updated.update(record)
+                    updated['original_conversation'] = conv.conversation
+                    if 'token_count' not in updated and conv.question_id in token_counts:
+                        updated['token_count'] = token_counts.get(conv.question_id)
+                    records_by_qid[conv.question_id] = updated
+                    _write_results_file(evaluate_file, summary_obj, records_by_qid)
                     evaluated_question_ids.add(conv.question_id)
 
-        ResultParser.prepend_summary_jsonl(output_file)
-        print(f"Evaluation output saved to {output_file}")
+        ResultParser.prepend_summary_jsonl(evaluate_file)
+        print(f"Evaluation results updated in {evaluate_file}")
         return
 
-    responses_output_file = None
+    results_output_file = None
     if args.responses_file:
-        responses_output_file = _resolve_path(args.responses_file, 'responses')
+        results_output_file = _resolve_path(args.responses_file, 'results')
     else:
-        responses_output_file = os.path.join('responses', model_id_safe, f"{timestamp}.jsonl")
+        results_output_file = os.path.join('results', model_id_safe, f"{timestamp}.jsonl")
     completed_question_ids = set()
-    if os.path.exists(responses_output_file):
-        data_loader.load_responses(responses_output_file)
+    if os.path.exists(results_output_file):
+        data_loader.load_responses(results_output_file)
         completed_question_ids = set(data_loader.get_responses().keys())
 
     all_question_ids = {conv.question_id for conv in data_loader.get_conversations()}
@@ -210,14 +281,25 @@ def main():
 
         model_provider = OpenAIModel.from_model_config(args.model_id, model_cfg)
 
+        def _write_generation_record(output_file, conversation, responses, token_count):
+            data_loader.append_result_record(
+                output_file=output_file,
+                conversation=conversation,
+                responses=responses,
+                token_count=token_count,
+                evaluations=[],
+                final_status="PENDING",
+            )
+
         data_loader.generate_responses_with_checkpoint(
             model_provider=model_provider,
-            output_file=responses_output_file,
-            max_workers=args.max_workers,
-            skip_question_ids=completed_question_ids
+            output_file=results_output_file,
+            max_workers=args.gen_max_workers,
+            skip_question_ids=completed_question_ids,
+            record_writer=_write_generation_record,
         )
 
-    print(f"Responses saved to {responses_output_file}")
+    print(f"Results saved to {results_output_file}")
 
 if __name__ == '__main__':
     main()

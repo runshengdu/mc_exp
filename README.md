@@ -9,8 +9,7 @@ MultiChallenge is a novel benchmark designed to evaluate large language models (
 │   ├── benchmark_questions.jsonl      # Benchmark conversation dataset
 │   ├── response_template.jsonl        # Template for response file format
 │   └── final_model_responses/         # Pre-generated model responses
-├── output/                            # Generated model responses output
-├── results/                           # Evaluation results output
+├── results/                           # Generated responses + evaluation output
 ├── src/
 │   ├── models/
 │   │   ├── base.py                    # Abstract ModelProvider base class
@@ -46,6 +45,7 @@ MultiChallenge is a novel benchmark designed to evaluate large language models (
    GLM_API_KEY=your-glm-api-key
    MOONSHOT_API_KEY=your-moonshot-api-key
    MINIMAX_API_KEY=your-minimax-api-key
+   ARK_API_KEY=your-ark-api-key
    ```
 
 ## **Usage**
@@ -60,12 +60,12 @@ Generate responses for benchmark conversations using a model defined in `models.
 python main.py --model-id doubao-seed-1-8-251228
 ```
 
-- Responses are saved to `responses/<model_id>_<timestamp>.jsonl`
+- Responses are saved to `results/<model_id>/<timestamp>.jsonl`
 - Supports checkpoint resumption: if the output file exists, already-completed questions are skipped
 
 Specify a custom output file:
 ```bash
-python main.py --model-id openai/gpt-5.2 --responses-file my_responses.json
+python main.py --model-id openai/gpt-5.2 --responses-file results/my_responses.jsonl
 ```
 
 Limit the number of tasks:
@@ -78,38 +78,38 @@ python main.py --model-id deepseek-chat --num-tasks 10
 Evaluate pre-generated responses using a multi-judge system (3 evaluator models by default):
 
 ```bash
-python main.py --evaluate-file output/my_responses.json
+python main.py --evaluate-file results/my_responses.jsonl
 ```
 
-- Evaluation uses comma-separated evaluator ids via `--evaluator` (allow 1, 3, or 5 models; default `deepseek-chat,glm-4.6,kimi-k2-0905-preview`)
+- Evaluation uses comma-separated evaluator ids via `--evaluator` (allow 1, 3, or 5 models; default `deepseek-chat,glm-4.7,kimi-k2.5`)
 - Final verdict requires at least half-plus-one YES votes (majority for odd-sized panels)
-- Results are saved to `results/<responses_file_stem>_evaluation.jsonl` by default
+- Results are written **in-place** back to the same JSONL file
 
 Specify custom evaluators:
 ```bash
-python main.py --evaluate-file output/responses.json \
-    --evaluator deepseek-chat,glm-4.6,kimi-k2-0905-preview
+python main.py --evaluate-file results/responses.jsonl \
+    --evaluator deepseek-chat,glm-4.7,kimi-k2.5
 ```
 
 ### **3. Parallel Processing**
 
 Use multiple workers for faster processing:
 ```bash
-python main.py --model-id anthropic/claude-sonnet-4.5 --max-workers 10
-python main.py --evaluate-file output/responses.json --max-workers 5
+python main.py --model-id anthropic/claude-sonnet-4.5 --gen-max-workers 10
+python main.py --evaluate-file results/responses.jsonl --eval-max-workers 5
 ```
 
 ### **Command-Line Arguments**
 
 | Argument | Description | Default |
 |----------|-------------|---------|
-| `--model-id` | Model ID for response generation (must exist in `models.yaml`) | `doubao-seed-1-8-251228` |
-| `--responses-file` | Custom path for response output file | Auto-generated |
-| `--evaluate-file` | Path to responses file for evaluation | - |
-| `--output-file` | Path to save evaluation results | Auto-generated |
-| `--evaluator` | Comma-separated evaluator model IDs (1, 3, or 5 entries; must exist in `models.yaml`) | `deepseek-chat,glm-4.6,kimi-k2-0905-preview` |
+| `--model-id` | Model ID for response generation (must exist in `models.yaml`) | `kimi-k2.5` |
+| `--responses-file` | Custom path for generation results file (JSONL) | `results/<model_id>/<timestamp>.jsonl` |
+| `--evaluate-file` | Path to generation results file for evaluation (in-place update) | - |
+| `--evaluator` | Comma-separated evaluator model IDs (1, 3, or 5 entries; must exist in `evaluators.yaml`) | `deepseek-chat,glm-4.7,kimi-k2.5` |
 | `--num-tasks` | Limit to first N tasks from benchmark | All tasks |
-| `--max-workers` | Number of parallel workers for LLM calls | `30` |
+| `--gen-max-workers` | Number of parallel workers for response generation | `100` |
+| `--eval-max-workers` | Number of parallel workers for evaluation | `40` |
 
 ### **Evaluation System**
 
@@ -122,25 +122,50 @@ The evaluation uses a **multi-judge voting** system:
 
 ### **Output Format**
 
-**Response File** (`output/*.json`):
-```json
-{"QUESTION_ID": 1, "RESPONSE": ["model response text"], "TOKEN_COUNT": 1234}
-```
-
-**Evaluation File** (`results/*_evaluation.json`):
+**Generation Results File** (`results/<model_id>/<timestamp>.jsonl`):
 ```json
 {
-    "SUMMARY": {
-        "overall_score": 75.5,
-        "axis_scores": {"REFINEMENT": 80.0, "COHERENCE": 70.0, ...}
-    }
+  "question_id": 1,
+  "axis": "REFINEMENT",
+  "original_conversation": ["..."],
+  "target_question": "...",
+  "pass_criteria": "YES",
+  "responses": ["model response text"],
+  "evaluations": [],
+  "final_status": "PENDING",
+  "token_count": 1234
 }
-{"question_id": 1, "axis": "REFINEMENT", "passed": true, "judge_1_verdict": "YES", ...}
+```
+
+**Evaluation Results (same JSONL file, updated in-place)**:
+```json
+{
+  "summary": {
+    "overall_score": 75.5,
+    "axis_scores": {"REFINEMENT": 80.0, "COHERENCE": 70.0, "...": 0.0}
+  }
+}
+{
+  "question_id": 1,
+  "axis": "REFINEMENT",
+  "responses": ["..."],
+  "evaluations": [
+    {
+      "attempt": 0,
+      "verdict": "YES",
+      "pass_criteria": "YES",
+      "passed": true,
+      "judge_1_verdict": "YES",
+      "judge_1_reasoning": "..."
+    }
+  ],
+  "final_status": "PASS (1/1 attempts passed)"
+}
 ```
 
 ## **Model Configuration**
 
-Models are configured in `models.yaml`. Each model entry includes:
+Models for **response generation** are configured in `models.yaml`. Evaluators are configured in `evaluators.yaml`. Each model entry includes:
 
 ```yaml
 models:

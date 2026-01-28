@@ -39,8 +39,17 @@ def _parse_json_objects(content: str, response_file: str):
     length = len(content)
 
     while idx < length:
-        while idx < length and content[idx].isspace():
-            idx += 1
+        while idx < length:
+            if content[idx].isspace():
+                idx += 1
+                continue
+            # Some result files may accidentally contain literal escape sequences like "\\n"
+            # between JSON objects (or at EOF). A JSON value cannot start with a backslash, so
+            # treating these sequences as whitespace is safe and makes parsing more robust.
+            if content[idx] == "\\" and idx + 1 < length and content[idx + 1] in {"n", "r", "t"}:
+                idx += 2
+                continue
+            break
         if idx >= length:
             break
         try:
@@ -68,12 +77,29 @@ class DataLoader:
                 if num_tasks is not None and i >= num_tasks:
                     break
                 data = json.loads(line)
+                question_id = data.get('question_id')
+                if question_id is None:
+                    question_id = data.get('QUESTION_ID')
+                axis = data.get('axis')
+                if axis is None:
+                    axis = data.get('AXIS')
+                conversation_data = data.get('conversation')
+                if conversation_data is None:
+                    conversation_data = data.get('CONVERSATION')
+                target_question = data.get('target_question')
+                if target_question is None:
+                    target_question = data.get('TARGET_QUESTION')
+                pass_criteria = data.get('pass_criteria')
+                if pass_criteria is None:
+                    pass_criteria = data.get('PASS_CRITERIA')
+                if question_id is None or axis is None or conversation_data is None or target_question is None or pass_criteria is None:
+                    continue
                 conversation = Conversation(
-                    question_id=data['QUESTION_ID'],
-                    axis=data['AXIS'],
-                    conversation=data['CONVERSATION'],
-                    target_question=data['TARGET_QUESTION'],
-                    pass_criteria=data['PASS_CRITERIA']
+                    question_id=question_id,
+                    axis=axis,
+                    conversation=conversation_data,
+                    target_question=target_question,
+                    pass_criteria=pass_criteria
                 )
                 self.conversations.append(conversation)
 
@@ -90,12 +116,24 @@ class DataLoader:
             for item in items:
                 if not isinstance(item, dict):
                     continue
-                qid = item.get('QUESTION_ID')
-                resp = item.get('RESPONSE')
+                if 'summary' in item or 'SUMMARY' in item:
+                    continue
+                qid = item.get('question_id')
+                if qid is None:
+                    qid = item.get('QUESTION_ID')
+                resp = item.get('responses')
+                if resp is None:
+                    resp = item.get('RESPONSES')
+                if resp is None:
+                    resp = item.get('response')
+                if resp is None:
+                    resp = item.get('RESPONSE')
                 if qid is None or resp is None:
                     continue
                 self.responses[qid] = ensure_list(resp)
-                if 'TOKEN_COUNT' in item:
+                if 'token_count' in item:
+                    self.token_counts[qid] = item['token_count']
+                elif 'TOKEN_COUNT' in item:
                     self.token_counts[qid] = item['TOKEN_COUNT']
         return self.responses
 
@@ -107,9 +145,9 @@ class DataLoader:
 
         with open(output_file, 'w', encoding='utf-8') as f:
             for question_id, response in self.responses.items():
-                record = {"QUESTION_ID": question_id, "RESPONSE": ensure_list(response)}
+                record = {"question_id": question_id, "response": ensure_list(response)}
                 if question_id in self.token_counts:
-                    record["TOKEN_COUNT"] = self.token_counts[question_id]
+                    record["token_count"] = self.token_counts[question_id]
                 record = sanitize_unusual_line_terminators(record)
                 f.write(json.dumps(record, ensure_ascii=False, indent=4) + "\n")
 
@@ -119,9 +157,38 @@ class DataLoader:
         if output_dir:
             os.makedirs(output_dir, exist_ok=True)
 
-        record = {"QUESTION_ID": question_id, "RESPONSE": ensure_list(response)}
+        record = {"question_id": question_id, "response": ensure_list(response)}
         if token_count is not None:
-            record["TOKEN_COUNT"] = token_count
+            record["token_count"] = token_count
+        record = sanitize_unusual_line_terminators(record)
+        with open(output_file, 'a', encoding='utf-8') as f:
+            f.write(json.dumps(record, ensure_ascii=False, indent=4) + "\n")
+
+    def append_result_record(
+        self,
+        output_file: str,
+        conversation: Conversation,
+        responses,
+        token_count: int = None,
+        evaluations=None,
+        final_status: str = "PENDING",
+    ) -> None:
+        output_dir = os.path.dirname(output_file)
+        if output_dir:
+            os.makedirs(output_dir, exist_ok=True)
+
+        record = {
+            "question_id": conversation.question_id,
+            "axis": conversation.axis,
+            "original_conversation": conversation.conversation,
+            "target_question": conversation.target_question,
+            "pass_criteria": conversation.pass_criteria,
+            "responses": ensure_list(responses),
+            "evaluations": ensure_list(evaluations),
+            "final_status": final_status,
+        }
+        if token_count is not None:
+            record["token_count"] = token_count
         record = sanitize_unusual_line_terminators(record)
         with open(output_file, 'a', encoding='utf-8') as f:
             f.write(json.dumps(record, ensure_ascii=False, indent=4) + "\n")
@@ -132,7 +199,8 @@ class DataLoader:
         output_file: str,
         attempts: int = 1,
         max_workers: int = 1,
-        skip_question_ids=None
+        skip_question_ids=None,
+        record_writer=None,
     ) -> Dict[int, List[str]]:
         """Generate responses, skipping QUESTION_IDs already present, and append each completed item to output_file."""
 
@@ -160,7 +228,7 @@ class DataLoader:
                 else:
                     response = result
                 responses.append(response)
-            return conversation.question_id, responses, total_tokens
+            return conversation, responses, total_tokens
 
         conversations_to_run = [
             conversation
@@ -177,7 +245,8 @@ class DataLoader:
             for future in tqdm(as_completed(future_to_conv), total=len(future_to_conv), desc="Generating responses"):
                 question_id = getattr(future_to_conv.get(future), "question_id", None)
                 try:
-                    question_id, responses, token_count = future.result()
+                    conversation, responses, token_count = future.result()
+                    question_id = conversation.question_id
                 except Exception as e:
                     if _prompt_skip(question_id, e):
                         print(f"Skipping QUESTION_ID {question_id} and continuing.")
@@ -189,7 +258,10 @@ class DataLoader:
                 self.responses[question_id] = responses
                 self.token_counts[question_id] = token_count
                 with write_lock:
-                    self.append_response(output_file, question_id, responses, token_count)
+                    if record_writer is not None:
+                        record_writer(output_file, conversation, responses, token_count)
+                    else:
+                        self.append_response(output_file, question_id, responses, token_count)
 
         return self.responses
 

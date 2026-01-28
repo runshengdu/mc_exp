@@ -2,6 +2,7 @@ from collections import defaultdict
 from typing import List, Dict
 import json
 import os
+import time
 from src.data_loader import ensure_list, sanitize_unusual_line_terminators
 
 class ResultParser:
@@ -68,7 +69,7 @@ class ResultParser:
             content = f.read()
 
         all_objects = ResultParser._parse_json_objects(content)
-        records = [obj for obj in all_objects if isinstance(obj, dict) and 'SUMMARY' not in obj]
+        records = [obj for obj in all_objects if isinstance(obj, dict) and 'summary' not in obj]
 
         eval_rows = []
         for obj in records:
@@ -77,29 +78,50 @@ class ResultParser:
             question_id = obj.get('question_id')
             axis = obj.get('axis')
             passed = obj.get('passed')
-            if question_id is None or axis is None or passed is None:
+            if question_id is not None and axis is not None and passed is not None:
+                eval_rows.append({
+                    'question_id': question_id,
+                    'axis': axis,
+                    'passed': bool(passed)
+                })
                 continue
+            question_id = obj.get('question_id')
+            axis = obj.get('axis')
+            evaluations = obj.get('evaluations')
+            if question_id is None or axis is None:
+                continue
+            evaluations = ensure_list(evaluations)
+            if not evaluations:
+                continue
+            passed_any = any(isinstance(e, dict) and bool(e.get('passed')) for e in evaluations)
             eval_rows.append({
                 'question_id': question_id,
                 'axis': axis,
-                'passed': bool(passed)
+                'passed': passed_any
             })
 
         summary = ResultParser(eval_rows).calculate_scores()
 
         tmp_path = output_file + '.tmp'
         with open(tmp_path, 'w', encoding='utf-8') as f:
-            f.write(json.dumps(sanitize_unusual_line_terminators({'SUMMARY': summary}), ensure_ascii=False, indent=4) + "\n")
+            f.write(json.dumps(sanitize_unusual_line_terminators({'summary': summary}), ensure_ascii=False, indent=4) + "\n")
             for obj in records:
                 f.write(json.dumps(sanitize_unusual_line_terminators(obj), ensure_ascii=False, indent=4) + "\n")
-        os.replace(tmp_path, output_file)
+        for attempt in range(5):
+            try:
+                os.replace(tmp_path, output_file)
+                return
+            except PermissionError:
+                if attempt == 4:
+                    raise
+                time.sleep(0.2 * (2 ** attempt))
     
     @staticmethod
     def append_evaluation_record(output_file: str, conv, record: dict, token_count: int = None) -> None:
         """Append evaluation record for a single conversation to output file."""
-        conv_responses = ensure_list(record.get('RESPONSES'))
+        conv_responses = ensure_list(record.get('responses'))
 
-        conv_results = ensure_list(record.get('EVALUATIONS'))
+        conv_results = ensure_list(record.get('evaluations'))
         attempts = max(1, len(conv_responses), len(conv_results))
         original_conversation = conv.conversation
         passed_attempts = sum(1 for r in conv_results if isinstance(r, dict) and r.get('passed'))

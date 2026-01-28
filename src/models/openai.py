@@ -1,3 +1,4 @@
+import time
 from openai import OpenAI
 from typing import Any, Dict, Optional, Tuple, Union
 from src.models.base import ModelProvider
@@ -66,17 +67,25 @@ class OpenAIModel(ModelProvider):
         extra.pop('temperature', None)
         extra.pop('stream', None)
 
-        response = self.client.chat.completions.create(
-            model=self.model,
-            messages=prompt,
-            temperature=self.temp,
-            **extra
-        )
-        content = response.choices[0].message.content
-        if return_usage:
-            usage = getattr(response, 'usage', None)
-            token_count = 0
-            if usage:
-                token_count = (getattr(usage, 'prompt_tokens', 0) or 0) + (getattr(usage, 'completion_tokens', 0) or 0)
-            return (content, token_count)
-        return content
+        last_error = None
+        for attempt in range(3):
+            try:
+                response = self.client.chat.completions.create(
+                    model=self.model,
+                    messages=prompt,
+                    temperature=self.temp,
+                    **extra
+                )
+                content = response.choices[0].message.content
+                if return_usage:
+                    usage = getattr(response, 'usage', None)
+                    token_count = 0
+                    if usage:
+                        token_count = (getattr(usage, 'prompt_tokens', 0) or 0) + (getattr(usage, 'completion_tokens', 0) or 0)
+                    return (content, token_count)
+                return content
+            except Exception as e:
+                last_error = e
+                if attempt < 2:
+                    time.sleep(1 * (2 ** attempt))
+        raise last_error

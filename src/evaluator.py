@@ -121,6 +121,7 @@ class Evaluator:
                         judge_results.append(parsed)
                         successful_model_indices.append(idx)
                     except Exception as e:
+                        print(f"Evaluator error [{model_names[idx]}]: {e}")
                         failed_count += 1
                         judge_results.append(None)
                         failed_evaluators.append(model_names[idx])
@@ -172,13 +173,13 @@ class Evaluator:
         final_status = f"{'PASS' if passes > 0 else 'FAIL'} ({passes}/{attempts} attempts passed)"
 
         result = {
-            'QUESTION_ID': conversation.question_id,
-            'AXIS': conversation.axis,
-            'TARGET_QUESTION': conversation.target_question,
-            'PASS_CRITERIA': conversation.pass_criteria,
-            'RESPONSES': responses,
-            'EVALUATIONS': evaluations,
-            'FINAL_STATUS': final_status
+            'question_id': conversation.question_id,
+            'axis': conversation.axis,
+            'target_question': conversation.target_question,
+            'pass_criteria': conversation.pass_criteria,
+            'responses': responses,
+            'evaluations': evaluations,
+            'final_status': final_status
         }
         if responses and 'failed_evaluators' in locals() and failed_evaluators:
             result['_failed_evaluators'] = failed_evaluators
