@@ -1,18 +1,9 @@
-# LLM Model Configuration
-# This file defines the available language models and their configurations
-
-# Available models
-default:
-  base_url: <base_url>
-  api_key: "${DEFAULT_LLM_API_KEY}"
-  temperature: 0.0
-
 models:
   - name: openai/gpt-5.2
     temperature: 1.0
     base_url: https://openrouter.ai/api/v1
     api_key: "${OPENROUTER_API_KEY}"
-    extra_body: {"reasoning": {"effort": "high"}}
+    extra_body: {"reasoning": {"effort": "xhigh"}}
 
   - name: anthropic/claude-sonnet-4.5
     temperature: 1.0
