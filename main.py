@@ -156,13 +156,13 @@ def main():
     parser.add_argument('--model-id', type=str, default='kimi-k2.5',
                         help="Model id to use for response generation (must exist in models.yaml).")
     parser.add_argument('--evaluator', type=str,
-                        default='deepseek-chat,glm-4.7,kimi-k2.5',
+                        default='doubao-seed-1-8-251228,glm-4.7,kimi-k2.5',
                         help="Comma-separated evaluator model ids (1, 3, or 5 models; must exist in evaluators.yaml).")
     parser.add_argument('--num-tasks', type=int,
                         help="If provided, only run the first k tasks from the benchmark dataset.")
-    parser.add_argument('--gen-max-workers', type=int, default=100,
+    parser.add_argument('--gen-max-workers', type=int, default=50,
                         help="Number of parallel workers to use for response generation.")
-    parser.add_argument('--eval-max-workers', type=int, default=20,
+    parser.add_argument('--eval-max-workers', type=int, default=50,
                         help="Number of parallel workers to use for evaluation.")
     parser.add_argument('--evaluate-file', type=str,
                         help="Results file for evaluation (in-place update).")

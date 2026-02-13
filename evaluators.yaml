@@ -19,7 +19,7 @@ models:
     temperature: 1.0
     base_url: https://ark.cn-beijing.volces.com/api/v3
     api_key: "${ARK_API_KEY}"
-    extra_body: {"reasoning_effort": "medium"}
+    extra_body: {"reasoning_effort": "low"}
   
   - name: google/gemini-3-flash-preview
     temperature: 1.0
