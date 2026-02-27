@@ -211,12 +211,6 @@ class DataLoader:
 
         write_lock = threading.Lock()
 
-        def _prompt_skip(question_id, error: Exception) -> bool:
-            user_input = input(
-                f"Generation failed for QUESTION_ID {question_id} ({error}). Skip and continue? [y/N]: "
-            ).strip().lower()
-            return user_input.startswith('y')
-
         def generate_conversation_responses(conversation):
             responses = []
             total_tokens = 0
@@ -248,12 +242,8 @@ class DataLoader:
                     conversation, responses, token_count = future.result()
                     question_id = conversation.question_id
                 except Exception as e:
-                    if _prompt_skip(question_id, e):
-                        print(f"Skipping QUESTION_ID {question_id} and continuing.")
-                        continue
-                    print(f"Aborting at QUESTION_ID {question_id}.")
-                    executor.shutdown(wait=False, cancel_futures=True)
-                    raise
+                    tqdm.write(f"Generation failed for QUESTION_ID {question_id} ({e}). Auto-skipping and continuing.")
+                    continue
 
                 self.responses[question_id] = responses
                 self.token_counts[question_id] = token_count

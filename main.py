@@ -156,7 +156,7 @@ def main():
     parser.add_argument('--model-id', type=str, default='kimi-k2.5',
                         help="Model id to use for response generation (must exist in models.yaml).")
     parser.add_argument('--evaluator', type=str,
-                        default='doubao-seed-1-8-251228,glm-4.7,kimi-k2.5',
+                        default='qwen3.5-plus,deepseek-chat,doubao-seed-2-0-pro-260215',
                         help="Comma-separated evaluator model ids (1, 3, or 5 models; must exist in evaluators.yaml).")
     parser.add_argument('--num-tasks', type=int,
                         help="If provided, only run the first k tasks from the benchmark dataset.")
