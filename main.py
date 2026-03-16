@@ -27,6 +27,9 @@ def _models_config_path() -> str:
 def _evaluators_config_path() -> str:
     return os.path.join(os.path.dirname(os.path.abspath(__file__)), 'evaluators.yaml')
 
+def _sanitize_path_component(name: str) -> str:
+    return re.sub(r'[\\/:*?"<>|]', '_', name)
+
 def _resolve_env_vars(obj):
     if isinstance(obj, dict):
         return {k: _resolve_env_vars(v) for k, v in obj.items()}
@@ -174,7 +177,7 @@ def main():
         parser.error(str(e))
 
     timestamp = datetime.now().strftime("%Y%m%d_%H%M")
-    model_id_safe = args.model_id.replace('/', '_')
+    model_id_safe = _sanitize_path_component(args.model_id)
 
     if args.responses_file and args.evaluate_file:
         parser.error("The --responses-file argument cannot be used together with --evaluate-file")
