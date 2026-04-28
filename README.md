@@ -1,201 +1,186 @@
-# MultiChallenge: A Realistic Multi-Turn Conversation Evaluation Benchmark Challenging to Frontier LLMs
+# MultiChallenge
 
-MultiChallenge is a novel benchmark designed to evaluate large language models (LLMs) on their ability to handle multi-turn conversations with human users—an essential but underexplored capability for their real-world applications. MultiChallenge focuses on four key categories of challenges that are common, realistic, and highly demanding in current human-LLM interactions. These challenges require LLMs to excel simultaneously in accurate context allocation, in-context reasoning, and instruction-following.
+MultiChallenge evaluates large language models on realistic multi-turn conversations.  
+The pipeline supports:
 
-## **Project Structure**
+- response generation from benchmark conversations
+- in-place multi-judge evaluation
+- optional Batch API generation flows for Qwen and Moonshot models
 
-```
+## Project Structure
+
+```text
 ├── data/
-│   ├── benchmark_questions.jsonl      # Benchmark conversation dataset
-│   ├── response_template.jsonl        # Template for response file format
-│   └── final_model_responses/         # Pre-generated model responses
-├── results/                           # Generated responses + evaluation output
+│   ├── benchmark_questions.jsonl        # Benchmark dataset
+│   └── response_template.jsonl          # Reference output schema
 ├── src/
 │   ├── models/
-│   │   ├── base.py                    # Abstract ModelProvider base class
-│   │   └── openai.py                  # OpenAI-compatible API model provider
-│   ├── conversation.py                # Conversation dataclass definition
-│   ├── data_loader.py                 # Data loading and response generation
-│   ├── evaluator.py                   # Multi-judge evaluation logic
-│   └── result_parser.py               # Result parsing and summary generation
-├── main.py                            # Main entry point
-├── models.yaml                        # Model configurations (API keys, endpoints)
-└── requirements.txt                   # Python dependencies
+│   │   ├── base.py                      # Model provider interface
+│   │   └── openai.py                    # OpenAI-compatible client wrapper
+│   ├── conversation.py                  # Conversation dataclass
+│   ├── data_loader.py                   # Dataset/response I/O and generation checkpointing
+│   ├── evaluator.py                     # Multi-judge evaluation and voting
+│   ├── result_parser.py                 # Summary aggregation
+│   └── utils.py                         # Shared concurrency helpers
+├── batch_api/
+│   ├── qwen/qwen.py                     # Qwen Batch API pipeline
+│   └── moonshot/moonshot.py             # Moonshot Batch API pipeline
+├── main.py                              # Main CLI (generate/evaluate)
+├── models.yaml                          # Generation model configs
+├── evaluators.yaml                      # Evaluator model configs
+└── requirements.txt                     # Python dependencies
 ```
 
-## **Setup Instructions**
+## Setup
 
-1. **Clone the Repository**
-   ```bash
-   git clone <repository-url>
-   cd multi-challenge
-   ```
-
-2. **Install Requirements**
-   ```bash
-   pip install -r requirements.txt
-   ```
-
-3. **Configure Environment Variables**
-   
-   Create a `.env` file in the root directory with your API keys. The keys are referenced in `models.yaml`:
-   ```plaintext
-   OPENROUTER_API_KEY=your-openrouter-api-key
-   DEEPSEEK_API_KEY=your-deepseek-api-key
-   GLM_API_KEY=your-glm-api-key
-   MOONSHOT_API_KEY=your-moonshot-api-key
-   MINIMAX_API_KEY=your-minimax-api-key
-   ARK_API_KEY=your-ark-api-key
-   ```
-
-## **Usage**
-
-The benchmark operates in two modes: **Response Generation** and **Evaluation**.
-
-### **1. Generate Model Responses**
-
-Generate responses for benchmark conversations using a model defined in `models.yaml`:
+1. Install dependencies:
 
 ```bash
-python main.py --model-id doubao-seed-1-8-251228
+pip install -r requirements.txt
 ```
 
-- Responses are saved to `results/<model_id>/<timestamp>.jsonl`
-- Supports checkpoint resumption: if the output file exists, already-completed questions are skipped
+2. Export API keys used by your selected entries in `models.yaml` and `evaluators.yaml`.
 
-Specify a custom output file:
+Example:
+
+```bash
+export OPENROUTER_API_KEY=...
+export DEEPSEEK_API_KEY=...
+export GLM_API_KEY=...
+export MOONSHOT_API_KEY=...
+export MINIMAX_API_KEY=...
+export ARK_API_KEY=...
+export DASHSCOPE_API_KEY=...
+```
+
+`main.py` resolves `${ENV_VAR}` placeholders in YAML and raises an error if a referenced env var is missing.
+
+## Main CLI Usage (`main.py`)
+
+The main workflow has two modes.
+
+### 1) Generate Responses
+
+```bash
+python main.py --model-id kimi-k2.6
+```
+
+- Default output path: `results/<model_id>/<YYYYmmdd_HHMM>.jsonl`
+- If output file already exists, completed `question_id`s are skipped (checkpoint resume)
+
+Custom output file:
+
 ```bash
 python main.py --model-id openai/gpt-5.2 --responses-file results/my_responses.jsonl
 ```
 
-Limit the number of tasks:
+Limit benchmark size:
+
 ```bash
-python main.py --model-id deepseek-chat --num-tasks 10
+python main.py --model-id deepseek-v4-flash --num-tasks 10
 ```
 
-### **2. Evaluate Responses**
-
-Evaluate pre-generated responses using a multi-judge system (3 evaluator models by default):
+### 2) Evaluate Existing Responses
 
 ```bash
 python main.py --evaluate-file results/my_responses.jsonl
 ```
 
-- Evaluation uses comma-separated evaluator ids via `--evaluator` (allow 1, 3, or 5 models; default `deepseek-chat,glm-4.7,kimi-k2.5`)
-- Final verdict requires at least half-plus-one YES votes (majority for odd-sized panels)
-- Results are written **in-place** back to the same JSONL file
+- Evaluates only records without non-empty `evaluations`
+- Updates the same file in place
+- Prepends a top-level summary object after evaluation
 
-Specify custom evaluators:
+Custom evaluator panel (must be 1, 3, or 5 models):
+
 ```bash
-python main.py --evaluate-file results/responses.jsonl \
-    --evaluator deepseek-chat,glm-4.7,kimi-k2.5
+python main.py --evaluate-file results/my_responses.jsonl --evaluator qwen3.6-flash,google/gemini-3-flash-preview,deepseek-v4-flash
 ```
 
-### **3. Parallel Processing**
+### Common Flags
 
-Use multiple workers for faster processing:
+- `--model-id` (default: `kimi-k2.5`)
+- `--responses-file`
+- `--evaluate-file`
+- `--evaluator` (default: `qwen3.6-flash,google/gemini-3-flash-preview,deepseek-v4-flash`)
+- `--num-tasks`
+- `--gen-max-workers` (default: `50`)
+- `--eval-max-workers` (default: `30`)
+
+## Evaluation Logic
+
+- Each response attempt is judged by an odd-numbered evaluator panel (1/3/5).
+- Each judge returns `YES`/`NO`.
+- Final verdict uses majority voting.
+- `passed = (final_verdict == pass_criteria)`.
+- `final_status` is `PASS` if any attempt passes, otherwise `FAIL`.
+
+If an evaluator call fails, the pipeline retries by reusing successful evaluators as backups. If all evaluators fail for a question, evaluation exits with error.
+
+## Output File Format
+
+Generation writes one record per question with:
+
+- `question_id`, `axis`, `original_conversation`, `target_question`, `pass_criteria`
+- `responses`
+- `evaluations` (initially empty)
+- `final_status` (initially `PENDING`)
+- optional `token_count`
+
+After evaluation, the same file includes:
+
+- a first JSON object: `{"summary": {"overall_score": ..., "axis_scores": {...}}}`
+- per-question records with populated `evaluations` and final pass/fail status
+
+## Batch API Workflows
+
+Two adapters are available:
+
+- `batch_api/qwen/qwen.py`
+- `batch_api/moonshot/moonshot.py`
+
+They support staged execution:
+
+- `prepare` -> build batch input and metadata
+- `upload` -> upload input file
+- `create` -> create batch job
+- `wait` -> poll until terminal status
+- `collect` -> download results and append successful responses into generation JSONL
+
+Or run all stages in one command:
+
 ```bash
-python main.py --model-id anthropic/claude-sonnet-4.5 --gen-max-workers 10
-python main.py --evaluate-file results/responses.jsonl --eval-max-workers 5
+python batch_api/qwen/qwen.py --step all --model-id qwen3.6-flash
+python batch_api/moonshot/moonshot.py --step all --model-id kimi-k2.6
 ```
 
-### **Command-Line Arguments**
+Notes:
 
-| Argument | Description | Default |
-|----------|-------------|---------|
-| `--model-id` | Model ID for response generation (must exist in `models.yaml`) | `kimi-k2.5` |
-| `--responses-file` | Custom path for generation results file (JSONL) | `results/<model_id>/<timestamp>.jsonl` |
-| `--evaluate-file` | Path to generation results file for evaluation (in-place update) | - |
-| `--evaluator` | Comma-separated evaluator model IDs (1, 3, or 5 entries; must exist in `evaluators.yaml`) | `deepseek-chat,glm-4.7,kimi-k2.5` |
-| `--num-tasks` | Limit to first N tasks from benchmark | All tasks |
-| `--gen-max-workers` | Number of parallel workers for response generation | `100` |
-| `--eval-max-workers` | Number of parallel workers for evaluation | `40` |
+- Intermediate artifacts are stored under `batch_api/<provider>/artifacts/...`.
+- `collect` appends only successful questions; failed/missing ones are logged in `meta.json`.
+- For staged runs, pass `--run-dir` for `upload/create/wait/collect`.
 
-### **Evaluation System**
+## Model Configuration
 
-The evaluation uses a **multi-judge voting** system:
-
-1. Each response is evaluated by an odd-sized panel of judge models (1, 3, or 5) configured via `--evaluator`
-2. Each judge outputs a `YES` or `NO` verdict based on the pass criteria
-3. Final verdict requires at least half-plus-one YES votes (e.g., 1/1, 2/3, or 3/5)
-4. A conversation passes if the final verdict matches the expected `PASS_CRITERIA`
-
-### **Output Format**
-
-**Generation Results File** (`results/<model_id>/<timestamp>.jsonl`):
-```json
-{
-  "question_id": 1,
-  "axis": "REFINEMENT",
-  "original_conversation": ["..."],
-  "target_question": "...",
-  "pass_criteria": "YES",
-  "responses": ["model response text"],
-  "evaluations": [],
-  "final_status": "PENDING",
-  "token_count": 1234
-}
-```
-
-**Evaluation Results (same JSONL file, updated in-place)**:
-```json
-{
-  "summary": {
-    "overall_score": 75.5,
-    "axis_scores": {"REFINEMENT": 80.0, "COHERENCE": 70.0, "...": 0.0}
-  }
-}
-{
-  "question_id": 1,
-  "axis": "REFINEMENT",
-  "responses": ["..."],
-  "evaluations": [
-    {
-      "attempt": 0,
-      "verdict": "YES",
-      "pass_criteria": "YES",
-      "passed": true,
-      "judge_1_verdict": "YES",
-      "judge_1_reasoning": "..."
-    }
-  ],
-  "final_status": "PASS (1/1 attempts passed)"
-}
-```
-
-## **Model Configuration**
-
-Models for **response generation** are configured in `models.yaml`. Evaluators are configured in `evaluators.yaml`. Each model entry includes:
+`models.yaml` and `evaluators.yaml` use:
 
 ```yaml
 models:
   - name: model-name
-    temperature: 0.0
+    temperature: 1.0
     base_url: https://api.example.com/v1
     api_key: "${ENV_VAR_NAME}"
-    extra_body: {}  # Optional API-specific parameters
-    cost_1m_token_dollar:
-      prompt_price: 2.00
-      completion_price: 4.00
+    max_tokens: 60000
+    extra_body: {}  # optional provider-specific params
 ```
 
-## **Benchmark Axes**
+The implementation uses OpenAI-compatible chat completions (`/v1/chat/completions`).
 
-MultiChallenge evaluates models across four axes:
-- **REFINEMENT**: Ability to refine responses based on user feedback
-- **EXPLICIT IF**: Handling explicit conditional instructions
-- **COHERENCE**: Maintaining coherent context across turns
-- **RECOLLECTION**: Recalling information from earlier in the conversation
+## Dependencies
 
-## **Project Dependencies**
+From `requirements.txt`:
 
-```
-pydantic
-python-dotenv
-tqdm
-openai
-pyyaml
-json-repair
-```
-
-See `requirements.txt` for the complete list.
+- `pydantic`
+- `tqdm`
+- `openai`
+- `pyyaml`
+- `json-repair`
