@@ -12,6 +12,11 @@ class OpenAIModel(ModelProvider):
         api_params = dict(cfg.get('api') or {})
         if 'extra_body' in cfg and 'extra_body' not in api_params:
             api_params['extra_body'] = cfg.get('extra_body')
+        if 'max_completion_tokens' not in api_params and 'max_tokens' not in api_params:
+            if 'max_completion_tokens' in cfg:
+                api_params['max_completion_tokens'] = cfg['max_completion_tokens']
+            elif 'max_tokens' in cfg:
+                api_params['max_tokens'] = cfg['max_tokens']
         return api_params
 
     @classmethod
