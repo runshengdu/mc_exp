@@ -1,4 +1,2 @@
 .mc
-.mc/
-results
 batch_api/**/artifacts/
