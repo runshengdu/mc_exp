@@ -159,7 +159,7 @@ def main():
     parser.add_argument('--model-id', type=str, default='kimi-k2.5',
                         help="Model id to use for response generation (must exist in models.yaml).")
     parser.add_argument('--evaluator', type=str,
-                        default='qwen3.6-flash,google/gemini-3-flash-preview,deepseek-v4-flash',
+                        default='qwen3.6-flash,kimi-k2.6,deepseek-v4-flash',
                         help="Comma-separated evaluator model ids (1, 3, or 5 models; must exist in evaluators.yaml).")
     parser.add_argument('--num-tasks', type=int,
                         help="If provided, only run the first k tasks from the benchmark dataset.")

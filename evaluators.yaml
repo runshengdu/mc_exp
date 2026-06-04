@@ -19,3 +19,9 @@ models:
     api_key: "${OPENROUTER_API_KEY}"
     extra_body: {reasoning: {effort: "minimal"}}
     max_tokens: 60000
+  
+  - name: kimi-k2.6
+    temperature: 1.0
+    base_url: https://api.moonshot.cn/v1
+    api_key: "${MOONSHOT_API_KEY}"
+    max_completion_tokens: 60000
