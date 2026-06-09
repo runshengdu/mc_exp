@@ -3,3 +3,4 @@ tqdm
 openai
 pyyaml
 json-repair
+tiktoken

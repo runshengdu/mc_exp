@@ -12,6 +12,12 @@ models:
     api_key: "${OPENROUTER_API_KEY}"
     max_completion_tokens: 60000
   
+  - name: google/gemini-3.5-flash
+    temperature: 1.0
+    base_url: https://zenmux.ai/api/v1
+    api_key: "${ZENMUX_API_KEY}"
+    max_completion_tokens: 60000
+  
   - name: minimax-m3
     temperature: 1.0
     base_url: https://api.minimaxi.com/v1

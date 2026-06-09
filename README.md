@@ -5,7 +5,7 @@ The pipeline supports:
 
 - response generation from benchmark conversations
 - in-place multi-judge evaluation
-- optional Batch API generation flows for Qwen and Moonshot models
+- optional Batch API generation flow for Qwen and Moonshot models
 
 ## Project Structure
 
@@ -23,8 +23,8 @@ The pipeline supports:
 │   ├── result_parser.py                 # Summary aggregation
 │   └── utils.py                         # Shared concurrency helpers
 ├── batch_api/
-│   ├── qwen/qwen.py                     # Qwen Batch API pipeline
-│   └── moonshot/moonshot.py             # Moonshot Batch API pipeline
+│   ├── batch.py                         # Qwen / Moonshot Batch API pipeline
+│   └── artifacts/                       # Intermediate batch run artifacts
 ├── main.py                              # Main CLI (generate/evaluate)
 ├── models.yaml                          # Generation model configs
 ├── evaluators.yaml                      # Evaluator model configs
@@ -131,33 +131,32 @@ After evaluation, the same file includes:
 - a first JSON object: `{"summary": {"overall_score": ..., "axis_scores": {...}}}`
 - per-question records with populated `evaluations` and final pass/fail status
 
-## Batch API Workflows
+## Batch API Workflow
 
-Two adapters are available:
+`batch_api/batch.py` supports Qwen and Moonshot models via `--model-id`.
 
-- `batch_api/qwen/qwen.py`
-- `batch_api/moonshot/moonshot.py`
-
-They support staged execution:
+Staged execution:
 
 - `prepare` -> build batch input and metadata
 - `upload` -> upload input file
 - `create` -> create batch job
 - `wait` -> poll until terminal status
 - `collect` -> download results and append successful responses into generation JSONL
+- `cancel` -> cancel an in-progress batch job
 
 Or run all stages in one command:
 
 ```bash
-python batch_api/qwen/qwen.py --step all --model-id qwen3.6-flash
-python batch_api/moonshot/moonshot.py --step all --model-id kimi-k2.6
+python batch_api/batch.py --step all --model-id qwen3.6-flash
+python batch_api/batch.py --step all --model-id kimi-k2.6
 ```
 
 Notes:
 
-- Intermediate artifacts are stored under `batch_api/<provider>/artifacts/...`.
+- `--model-id` is required.
+- Intermediate artifacts are stored under `batch_api/artifacts/<model_id>/...`.
 - `collect` appends only successful questions; failed/missing ones are logged in `meta.json`.
-- For staged runs, pass `--run-dir` for `upload/create/wait/collect`.
+- For staged runs, pass `--run-dir` for `upload/create/wait/collect/cancel`.
 
 ## Model Configuration
 

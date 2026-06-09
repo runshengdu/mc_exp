@@ -9,7 +9,7 @@ from typing import Any
 from openai import OpenAI
 
 # Ensure repository root is importable when running this file directly.
-REPO_ROOT = Path(__file__).resolve().parents[2]
+REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
@@ -19,6 +19,15 @@ from src.data_loader import DataLoader
 from src.models.openai import OpenAIModel
 
 TERMINAL_BATCH_STATES = {"completed", "failed", "expired", "cancelled"}
+CANCELLABLE_BATCH_STATES = {"validating", "in_progress", "finalizing"}
+KIMI_BATCH_FORBIDDEN_PARAMS = {
+    "temperature",
+    "max_tokens",
+    "top_p",
+    "n",
+    "presence_penalty",
+    "frequency_penalty",
+}
 
 
 def parse_args() -> argparse.Namespace:
@@ -27,10 +36,10 @@ def parse_args() -> argparse.Namespace:
         "--step",
         type=str,
         default="all",
-        choices=["all", "prepare", "upload", "create", "wait", "collect", "submit", "poll"],
+        choices=["all", "prepare", "upload", "create", "wait", "collect", "cancel", "submit", "poll"],
         help="Pipeline step to run. Recommended flow: prepare/upload/create/wait/collect.",
     )
-    parser.add_argument("--model-id", type=str, default="qwen3.6-flash", help="Model id in models.yaml")
+    parser.add_argument("--model-id", type=str, required=True, help="Model id in models.yaml")
     parser.add_argument(
         "--input-file",
         type=str,
@@ -64,20 +73,20 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--artifacts-dir",
         type=str,
-        default="batch_api/qwen/artifacts",
+        default="batch_api/artifacts",
         help="Directory to store intermediate artifacts.",
     )
     parser.add_argument(
         "--run-dir",
         type=str,
         default=None,
-        help="Existing run directory, required by upload/create/wait/collect steps.",
+        help="Existing run directory, required by upload/create/wait/collect/cancel steps.",
     )
     parser.add_argument(
         "--batch-id",
         type=str,
         default=None,
-        help="Batch ID override for wait/collect steps.",
+        help="Batch ID override for wait/collect/cancel steps.",
     )
     return parser.parse_args()
 
@@ -183,6 +192,10 @@ def build_batch_request_body(
         "temperature": float(model_cfg.get("temperature", 0.0)),
     }
     body.update(_openai_api_kwargs(model_cfg))
+
+    if model_id in {"kimi-k2.5", "kimi-k2.6"}:
+        for k in KIMI_BATCH_FORBIDDEN_PARAMS:
+            body.pop(k, None)
     return body
 
 
@@ -294,6 +307,12 @@ def create_batch(client: OpenAI, input_file_id: str, completion_window: str) -> 
     )
     print(f"Batch 任务已创建: {batch.id}")
     return batch.id
+
+
+def cancel_batch(client: OpenAI, batch_id: str) -> Any:
+    batch = client.batches.cancel(batch_id)
+    print(f"Batch 取消请求已提交: {batch.id}")
+    return batch
 
 
 def poll_batch(client: OpenAI, batch_id: str, poll_interval_seconds: int) -> Any:
@@ -422,6 +441,38 @@ def stage_create(args: argparse.Namespace, run_dir: Path) -> str:
     return batch_id
 
 
+def stage_cancel(args: argparse.Namespace, run_dir: Path) -> Any:
+    meta_json, metadata = load_meta_or_fail(run_dir)
+    model_id = str(metadata["model"])
+    batch_id = args.batch_id or metadata.get("batch_id")
+    if not batch_id:
+        raise ValueError("未找到 batch_id。请先执行 create，或通过 --batch-id 指定。")
+
+    client = make_client(model_id)
+    current = client.batches.retrieve(str(batch_id))
+    if current.status in TERMINAL_BATCH_STATES:
+        print(f"Batch 已处于终态，无需取消: {current.status}")
+        metadata["batch_id"] = str(batch_id)
+        metadata["batch_status"] = current.status
+        save_json(meta_json, metadata)
+        return current
+    if current.status == "cancelling":
+        print(f"Batch 已在取消中: {current.status}")
+        metadata["batch_id"] = str(batch_id)
+        metadata["batch_status"] = current.status
+        save_json(meta_json, metadata)
+        return current
+    if current.status not in CANCELLABLE_BATCH_STATES:
+        raise RuntimeError(f"当前状态不允许取消: {current.status}")
+
+    batch = cancel_batch(client, str(batch_id))
+    metadata["batch_id"] = str(batch_id)
+    metadata["batch_status"] = batch.status
+    save_json(meta_json, metadata)
+    print(f"cancel 完成，当前状态: {batch.status}")
+    return batch
+
+
 def stage_wait(args: argparse.Namespace, run_dir: Path) -> Any:
     meta_json, metadata = load_meta_or_fail(run_dir)
     model_id = str(metadata["model"])
@@ -533,7 +584,7 @@ def main() -> None:
     elif step == "poll":
         step = "wait"
 
-    if step in {"upload", "create", "wait", "collect"} and not args.run_dir:
+    if step in {"upload", "create", "wait", "collect", "cancel"} and not args.run_dir:
         raise ValueError(f"--step {step} 需要传入 --run-dir")
 
     if step == "prepare":
@@ -550,6 +601,9 @@ def main() -> None:
         return
     if step == "collect":
         stage_collect(args, Path(args.run_dir))
+        return
+    if step == "cancel":
+        stage_cancel(args, Path(args.run_dir))
         return
 
     run_dir = stage_prepare(args)

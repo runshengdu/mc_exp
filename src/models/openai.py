@@ -61,10 +61,18 @@ class OpenAIModel(ModelProvider):
         """
         if isinstance(prompt, str):
             prompt = [{"role": "user", "content": prompt}]
-        elif isinstance(prompt, list) and all(isinstance(item, dict) and 'role' in item and item['role'] in ['user', 'assistant'] for item in prompt):
-            pass 
+        elif isinstance(prompt, list) and all(
+            isinstance(item, dict)
+            and 'role' in item
+            and item['role'] in ('system', 'user', 'assistant')
+            for item in prompt
+        ):
+            pass
         else:
-            raise ValueError("Prompt must be a string or a list of dictionaries with 'role' keys as 'user' or 'assistant'.")
+            raise ValueError(
+                "Prompt must be a string or a list of message dicts with "
+                "'role' in ('system', 'user', 'assistant')."
+            )
 
         extra = dict(self.default_params)
         extra.pop('model', None)
